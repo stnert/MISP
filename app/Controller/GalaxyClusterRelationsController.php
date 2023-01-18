@@ -1,6 +1,9 @@
 <?php
 App::uses('AppController', 'Controller');
 
+/**
+ * @property GalaxyClusterRelation $GalaxyClusterRelation
+ */
 class GalaxyClusterRelationsController extends AppController
 {
     public $components = array('Session', 'RequestHandler');
@@ -69,8 +72,6 @@ class GalaxyClusterRelationsController extends AppController
             $this->paginate['contain'] = array('SharingGroup', 'SourceCluster' => ['Org', 'Orgc'], 'TargetCluster', 'GalaxyClusterRelationTag' => array('Tag'));
             $relations = $this->paginate();
             $relations = $this->GalaxyClusterRelation->removeNonAccessibleTargetCluster($this->Auth->user(), $relations);
-            $this->loadModel('SharingGroup');
-            $sgs = $this->SharingGroup->fetchAllAuthorised($this->Auth->user());
             $this->loadModel('Attribute');
             $distributionLevels = $this->Attribute->distributionLevels;
             unset($distributionLevels[5]);
@@ -145,6 +146,7 @@ class GalaxyClusterRelationsController extends AppController
             
             if (empty($errors)) {
                 $message = __('Relationship added.');
+                $this->GalaxyClusterRelation->SourceCluster->touchTimestamp($clusterSource['SourceCluster']['id']);
                 $this->GalaxyClusterRelation->SourceCluster->unpublish($clusterSource['SourceCluster']['id']);
             } else {
                 $message = __('Relationship could not be added.');
@@ -174,8 +176,7 @@ class GalaxyClusterRelationsController extends AppController
                 }
             }
         }
-        $existingRelations = $this->GalaxyClusterRelation->getExistingRelationships();
-        $this->set('existingRelations', $existingRelations);
+        $this->set('existingRelations', $this->GalaxyClusterRelation->getExistingRelationships());
         $this->set('distributionLevels', $distributionLevels);
         $this->set('initialDistribution', $initialDistribution);
         $this->set('sharingGroups', $sgs);
@@ -240,6 +241,7 @@ class GalaxyClusterRelationsController extends AppController
 
             if (empty($errors)) {
                 $message = __('Relationship added.');
+                $this->GalaxyClusterRelation->SourceCluster->touchTimestamp($clusterSource['SourceCluster']['id']);
                 $this->GalaxyClusterRelation->SourceCluster->unpublish($clusterSource['SourceCluster']['id']);
             } else {
                 $message = __('Relationship could not be added.');
@@ -264,6 +266,7 @@ class GalaxyClusterRelationsController extends AppController
             }
         }
         $this->request->data = $existingRelation;
+        $this->set('existingRelations', $this->GalaxyClusterRelation->getExistingRelationships());
         $this->set('distributionLevels', $distributionLevels);
         $this->set('initialDistribution', $initialDistribution);
         $this->set('sharingGroups', $sgs);
@@ -282,6 +285,7 @@ class GalaxyClusterRelationsController extends AppController
             $clusterSource = $this->GalaxyClusterRelation->SourceCluster->fetchIfAuthorized($this->Auth->user(), $relation['GalaxyClusterRelation']['galaxy_cluster_uuid'], array('edit', 'publish'), $throwErrors=true, $full=false);
             $result = $this->GalaxyClusterRelation->delete($id, true);
             if ($result) {
+                $this->GalaxyClusterRelation->SourceCluster->touchTimestamp($clusterSource['SourceCluster']['id']);
                 $this->GalaxyClusterRelation->SourceCluster->unpublish($clusterSource['SourceCluster']['id']);
                 $message = __('Galaxy cluster relationship successfuly deleted.');
                 if ($this->_isRest()) {

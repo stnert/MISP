@@ -4,9 +4,7 @@
     <?php endif; ?>
     <?php
         echo $this->element('/genericElements/IndexTable/index_table', array(
-            'paginatorOptions' => array(
-                'update' => '#eventreport_index_div',
-            ),
+            'containerId' => 'eventreport',
             'data' => array(
                 'data' => $reports,
                 'top_bar' => array(
@@ -15,29 +13,29 @@
                             'type' => 'simple',
                             'children' => array(
                                 array(
-                                    'onClick' => 'openGenericModal',
-                                    'onClickParams' => [$baseurl . '/eventReports/add/' . h($event_id)],
+                                    'url' => $baseurl . '/eventReports/add/' . h($event_id),
                                     'active' => true,
                                     'text' => __('Add Event Report'),
                                     'fa-icon' => 'plus',
+                                    'class' => 'modal-open',
                                     'requirement' => $canModify,
                                 ),
                                 array(
-                                    'onClick' => 'openGenericModal',
-                                    'onClickParams' => [$baseurl . '/eventReports/importReportFromUrl/' . h($event_id)],
+                                    'url' => $baseurl . '/eventReports/importReportFromUrl/' . h($event_id),
                                     'active' => true,
                                     'text' => __('Import from URL'),
                                     'title' => __('Content for this URL will be downloaded and converted to Markdown'),
                                     'fa-icon' => 'link',
+                                    'class' => 'modal-open',
                                     'requirement' => $canModify && $importModuleEnabled,
                                 ),
                                 array(
-                                    'onClick' => 'openGenericModal',
-                                    'onClickParams' => [$baseurl . '/eventReports/reportFromEvent/' . h($event_id)],
+                                    'url' => $baseurl . '/eventReports/reportFromEvent/' . h($event_id),
                                     'active' => true,
                                     'text' => __('Generate report from Event'),
                                     'title' => __('Based on filters, create a report summarizing the event'),
                                     'fa-icon' => 'list-alt',
+                                    'class' => 'modal-open',
                                     'requirement' => $canModify,
                                 ),
                             )
@@ -116,18 +114,9 @@
                         'icon' => 'trash',
                         'onclick' => 'simplePopup(\'' . $baseurl . '/event_reports/delete/[onclick_params_data_path]\');',
                         'onclick_params_data_path' => 'EventReport.id',
-                        'complex_requirement' => array(
-                            'function' => function ($row, $options) {
-                                return ($options['me']['Role']['perm_site_admin'] || $options['me']['org_id'] == $options['datapath']['orgc']) && !$options['datapath']['deleted'];
-                            },
-                            'options' => array(
-                                'me' => $me,
-                                'datapath' => array(
-                                    'orgc' => 'EventReport.orgc_id',
-                                    'deleted' => 'EventReport.deleted'
-                                )
-                            )
-                        ),
+                        'complex_requirement' =>  function (array $row) use ($canModify) {
+                            return $canModify && !$row['EventReport']['deleted'];
+                        },
                     ),
                     array(
                         'title' => __('Restore report'),
@@ -136,25 +125,15 @@
                         'icon' => 'trash-restore',
                         'postLink' => true,
                         'postLinkConfirm' => __('Are you sure you want to restore the Report?'),
-                        'complex_requirement' => array(
-                            'function' => function ($row, $options) {
-                                return ($options['me']['Role']['perm_site_admin'] || $options['me']['org_id'] == $options['datapath']['orgc']) && $options['datapath']['deleted'];
-                            },
-                            'options' => array(
-                                'me' => $me,
-                                'datapath' => array(
-                                    'orgc' => 'EventReport.orgc_id',
-                                    'deleted' => 'EventReport.deleted'
-                                )
-                            )
-                        ),
+                        'complex_requirement' => function (array $row) use ($canModify) {
+                            return $canModify && $row['EventReport']['deleted'];
+                        }
                     ),
                 )
             )
         ));
     ?>
 </div>
-
 <script>
     var loadingSpanAnimation = '<span id="loadingSpan" class="fa fa-spin fa-spinner" style="margin-left: 5px;"></span>';
     $(function() {
@@ -165,7 +144,7 @@
 
         $('#eventReportSelectors a.btn').click(function(e) {
             e.preventDefault()
-            $("#eventreport_index_div").empty()
+            $("#eventreport_content").empty()
                 .append(
                     $('<div></div>')
                         .css({'text-align': 'center', 'font-size': 'large', 'margin': '5px 0'})
@@ -173,7 +152,7 @@
                 )
             var url = $(this).attr('href')
             $.get(url, function(data) {
-                $("#eventreport_index_div").html(data);
+                $("#eventreport_content").html(data);
             });
         });
     })
@@ -183,7 +162,7 @@
         $.ajax({
             dataType: "html",
             beforeSend: function() {
-                $("#eventreport_index_div").empty()
+                $("#eventreport_content").empty()
                 .append(
                     $('<div></div>')
                         .css({'text-align': 'center', 'font-size': 'large', 'margin': '5px 0'})
@@ -191,10 +170,10 @@
                 )
             },
             success:function (data) {
-                $("#eventreport_index_div").html(data);
+                $("#eventreport_content").html(data);
             },
             error: function (jqXHR, textStatus, errorThrown) {
-                $("#eventreport_index_div").empty().text('<?= __('Failed to load Event report table')?>')
+                $("#eventreport_content").empty().text('<?= __('Failed to load Event report table')?>')
                 showMessage('fail', textStatus + ": " + errorThrown);
             },
             url:url

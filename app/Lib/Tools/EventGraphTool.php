@@ -21,12 +21,16 @@
                 'fields' => array('Tag.id', 'Tag.name'),
                 'sort' => array('lower(Tag.name) asc'),
             ));
+            $this->__extendedEventUUIDMapping = array();
             $this->__extended_view = $extended_view;
             $this->__lookupTables = array(
                 'analysisLevels' => $this->__eventModel->analysisLevels,
                 'distributionLevels' => $this->__eventModel->Attribute->distributionLevels
             );
             $this->__authorized_JSON_key = array('event_id', 'distribution', 'category', 'type', 'value', 'comment', 'uuid', 'to_ids', 'timestamp', 'id');
+
+            App::uses('ColourPaletteTool', 'Tools');
+            $this->__paletteTool = new ColourPaletteTool();
             return true;
         }
 
@@ -264,10 +268,13 @@
                     'label' => $attr['value'],
                     'event_id' => $attr['event_id'],
                     'node_type' => 'attribute',
+                    'comment' => $attr['comment'],
                 );
                 array_push($this->__json['items'], $toPush);
+                $this->__extendedEventUUIDMapping[$toPush['event_id']] = '';
             }
 
+            $templatesCount = [];
             foreach ($object as $obj) {
                 $toPush = array(
                     'id' => sprintf('o-%s', $obj['id']),
@@ -279,6 +286,7 @@
                     'meta-category' => $obj['meta-category'],
                     'template_uuid' => $obj['template_uuid'],
                     'event_id' => $obj['event_id'],
+                    'comment' => $obj['comment'],
                 );
                 if (isset($obj['Attribute'])) {
                     $toPush['Attribute'] = $obj['Attribute'];
@@ -288,8 +296,13 @@
                         $this->__json['existing_object_relation'][$attr['object_relation']] = 0; // set-alike
                     }
                 }
+                if (empty($templatesCount[$obj['template_uuid']])) {
+                    $templatesCount[$obj['template_uuid']] = 0;
+                }
+                $templatesCount[$obj['template_uuid']]++;
 
                 array_push($this->__json['items'], $toPush);
+                $this->__extendedEventUUIDMapping[$toPush['event_id']] = '';
 
                 foreach ($obj['ObjectReference'] as $rel) {
                     $toPush = array(
@@ -303,6 +316,12 @@
                     );
                     array_push($this->__json['relations'], $toPush);
                 }
+            }
+            $this->__json['items'] = $this->addObjectColors($this->__json['items'], $templatesCount);
+
+            if ($this->__extended_view) {
+                $this->fetchEventUUIDFromId();
+                $this->__json['extended_event_uuid_mapping'] = $this->__extendedEventUUIDMapping;
             }
 
             return $this->__json;
@@ -343,6 +362,7 @@
                     'label' => $attr['value'],
                     'event_id' => $attr['event_id'],
                     'node_type' => 'attribute',
+                    'comment' => $attr['comment'],
                 );
                 array_push($this->__json['items'], $toPush);
 
@@ -370,6 +390,7 @@
                     'meta-category' => $obj['meta-category'],
                     'template_uuid' => $obj['template_uuid'],
                     'event_id' => $obj['event_id'],
+                    'comment' => $obj['comment'],
                 );
                 array_push($this->__json['items'], $toPush);
 
@@ -453,6 +474,7 @@
                     'label' => $attr['value'],
                     'event_id' => $attr['event_id'],
                     'node_type' => 'attribute',
+                    'comment' => $attr['comment'],
                 );
                 array_push($this->__json['items'], $toPush);
 
@@ -480,6 +502,7 @@
                     'meta-category' => $obj['meta-category'],
                     'template_uuid' => $obj['template_uuid'],
                     'event_id' => $obj['event_id'],
+                    'comment' => $obj['comment'],
                 );
                 array_push($this->__json['items'], $toPush);
 
@@ -504,6 +527,19 @@
                         array_push($this->__json['relations'], $toPush);
                         $i = $i + 1;
                     }
+                }
+
+                foreach ($obj['ObjectReference'] as $rel) {
+                    $toPush = array(
+                        'id' => $rel['id'],
+                        'uuid' => $rel['uuid'],
+                        'from' => sprintf('o-%s', $obj['id']),
+                        'to' => $rel['referenced_type'] == 1 ? sprintf('o-%s', $rel['referenced_id']) : $rel['referenced_id'],
+                        'type' => $rel['relationship_type'],
+                        'comment' => $rel['comment'],
+                        'event_id' => $rel['event_id'],
+                    );
+                    array_push($this->__json['relations'], $toPush);
                 }
             }
 
@@ -546,5 +582,28 @@
                 throw new NotFoundException('No templates');
             }
             return $templates;
+        }
+
+        public function fetchEventUUIDFromId()
+        {
+            $eventUUIDs = $this->__eventModel->find('list', [
+                'conditions' => ['id' => array_keys($this->__extendedEventUUIDMapping)],
+                'fields' => ['uuid']
+            ]);
+            $this->__extendedEventUUIDMapping = $eventUUIDs;
+        }
+
+        private function addObjectColors($items, $templatesCount)
+        {
+            $colours = [];
+            foreach ($templatesCount as $templateUUID => $count) {
+                $colours[$templateUUID] = $this->__paletteTool->generatePaletteFromString($templateUUID, $count);
+            }
+            foreach ($items as $i => $item) {
+                if ($item['node_type'] == 'object') {
+                    $items[$i]['color'] = array_shift($colours[$item['template_uuid']]);
+                }
+            }
+            return $items;
         }
     }

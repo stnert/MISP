@@ -17,6 +17,7 @@
  */
 
 App::uses('AppModel', 'Model');
+App::uses('BackgroundJobsTool', 'Tools');
 
 /**
  * Application Shell
@@ -26,12 +27,74 @@ App::uses('AppModel', 'Model');
  *
  * @package       app.Console.Command
  */
-class AppShell extends Shell {
-
+abstract class AppShell extends Shell
+{
     public $tasks = array('ConfigLoad');
-    
-    public function perform() {
+
+    /** @var BackgroundJobsTool */
+    private $BackgroundJobsTool;
+
+    public function initialize()
+    {
+        $this->ConfigLoad = $this->Tasks->load('ConfigLoad');
+        $this->ConfigLoad->execute();
+
+        parent::initialize();
+    }
+
+    public function perform()
+    {
         $this->initialize();
         $this->{array_shift($this->args)}();
+    }
+
+    protected function _welcome()
+    {
+        // disable welcome message
+    }
+
+    /**
+     * @param mixed $data
+     * @return string
+     * @throws JsonException
+     */
+    protected function json($data)
+    {
+        return JsonTool::encode($data, true);
+    }
+
+    /**
+     * @param mixed $value
+     * @return bool
+     */
+    protected function toBoolean($value)
+    {
+        $value = strtolower($value);
+        switch ($value) {
+            case 'true':
+            case '1':
+                return true;
+            case 'false':
+            case '0':
+                return false;
+            default:
+                $this->error("Invalid state value `$value`, it must be `true`, `false`, `1`, or `0`.");
+        }
+    }
+
+    /**
+     * @return BackgroundJobsTool
+     * @throws Exception
+     */
+    protected function getBackgroundJobsTool()
+    {
+        if (!isset($this->BackgroundJobsTool)) {
+            $settings = ['enabled' => false];
+            if (!empty(Configure::read('SimpleBackgroundJobs.enabled'))) {
+                $settings = Configure::read('SimpleBackgroundJobs');
+            }
+            $this->BackgroundJobsTool = new BackgroundJobsTool($settings);
+        }
+        return $this->BackgroundJobsTool;
     }
 }

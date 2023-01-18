@@ -8,6 +8,7 @@
     $table_data[] = array('key' => __('UUID'), 'value' => $galaxy['Galaxy']['uuid']);
     $table_data[] = array('key' => __('Description'), 'value' => $galaxy['Galaxy']['description']);
     $table_data[] = array('key' => __('Version'), 'value' => $galaxy['Galaxy']['version']);
+    $table_data[] = array('key' => __('Local Only'), 'value' => ($galaxy['Galaxy']['local_only'] ? __("Yes. It can only be added in the local context.") : __("No")));
     $kco = '';
     if (isset($galaxy['Galaxy']['kill_chain_order'])) {
         $kco = '<strong>' . __('Kill chain order') . '</strong> <span class="useCursorPointer fa fa-expand" onclick="$(\'#killChainOrder\').toggle(\'blind\')"></span>';
@@ -15,7 +16,7 @@
     }
 ?>
 
-<div class='view'>
+<div class="view">
     <div class="row-fluid">
         <div class="span8">
             <h2>
@@ -26,7 +27,7 @@
             <?php echo $kco; ?>
         </div>
     </div>
-    <div id="clusters_div"></div>
+    <div id="clusters_content"></div>
 </div>
 
 <script type="text/javascript">
@@ -45,7 +46,7 @@ $(function () {
         }
     ?>
     $.get("<?php echo h($uri);?>", function(data) {
-        $("#clusters_div").html(data);
+        $("#clusters_content").html(data);
     }).fail(xhrFailCallback);
 
     var $kco = $('#killChainOrder');

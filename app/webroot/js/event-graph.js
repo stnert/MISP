@@ -75,6 +75,7 @@ class EventGraph {
 
         this.extended_event_color_mapping = {};
         this.extended_event_points = {};
+        this.extended_event_uuid_mapping = {};
 
         this.network = new vis.Network(container, data, this.network_options);
         this.add_unreferenced_root_node();
@@ -85,13 +86,13 @@ class EventGraph {
     bind_listener() {
         var that = this;
         this.network.on("selectNode", function (params) {
-            that.network.moveTo({
-                position: {
-                    x: params.pointer.canvas.x,
-                    y: params.pointer.canvas.y
-                },
-                animation: true,
-            });
+            // that.network.moveTo({
+            //     position: {
+            //         x: params.pointer.canvas.x,
+            //         y: params.pointer.canvas.y
+            //     },
+            //     animation: true,
+            // });
         });
 
         this.network.on("dragStart", function (params) {
@@ -111,7 +112,7 @@ class EventGraph {
 
             for (var event_id in that.extended_event_points) {
                 if (that.extended_event_color_mapping[event_id] === undefined) {
-                    eventGraph.extended_event_color_mapping[event_id] = stringToRGB(event_id);
+                    eventGraph.extended_event_color_mapping[event_id] = stringToRGB(that.extended_event_uuid_mapping[event_id]);
                 }
                 var chosen_color = eventGraph.extended_event_color_mapping[event_id];
 
@@ -345,6 +346,13 @@ class EventGraph {
             eventApply: function(value) {
                 dataHandler.fetch_data_and_update();
             }
+        });
+        menu_display.add_button({
+            label: "Remove leaves",
+            type: "primary",
+            event: function () {
+                eventGraph.remove_leaves();
+            },
         });
         return menu_display;
     }
@@ -677,6 +685,7 @@ class EventGraph {
         if (hard) {
             this.backup_connection_edges = {};
             this.extended_event_points = {};
+            this.extended_event_uuid_mapping = {};
             this.extended_event_color_mapping = {};
         }
     }
@@ -685,6 +694,10 @@ class EventGraph {
         var that = this;
         that.network_loading(true, loadingText_creating);
 
+        this.extended_event_uuid_mapping = data.extended_event_uuid_mapping;
+
+        dataHandler.mapping_node_to_from_edges = {};
+        dataHandler.mapping_node_to_to_edges = {};
         // New nodes will be automatically added
         // removed references will be deleted
         var node_conf;
@@ -702,17 +715,20 @@ class EventGraph {
             if ( node.node_type == 'object' ) {
                 var group =  'object';
                 var label = dataHandler.generate_label(node);
+                var labelHtml = label + '</br><i>' + escapeHtml(node.comment) + '</i>'
+                label += ' ' + escapeHtml(node.comment)
                 var striped_value = that.strip_text_value(label);
                 node_conf = {
                     id: node.id,
                     uuid: node.uuid,
                     Attribute: node.Attribute,
+                    event_id: node.event_id,
                     label: striped_value,
-                    title: label,
+                    title: labelHtml,
                     group: group,
                     mass: 5,
                     icon: {
-                        color: stringToRGB(label),
+                        color: node.color,
                         face: '"Font Awesome 5 Free"',
                         code: that.get_FA_icon(node['meta-category']),
                     }
@@ -757,12 +773,15 @@ class EventGraph {
             } else {
                 group =  'attribute';
                 label = node.type + ': ' + node.label;
+                label += ' ' + escapeHtml(node.comment)
+                var labelHtml = label + '</br><i>' + escapeHtml(node.comment) + '</i>'
                 var striped_value = that.strip_text_value(label);
                 node_conf = {
                     id: node.id,
                     uuid: node.uuid,
+                    event_id: node.event_id,
                     label: striped_value,
-                    title: label,
+                    title: labelHtml,
                     group: group,
                     mass: 5,
                 };
@@ -810,6 +829,14 @@ class EventGraph {
             };
             newRelations.push(rel);
             newRelationIDs.push(rel.id);
+            if (!dataHandler.mapping_node_to_from_edges[rel.from]) {
+                dataHandler.mapping_node_to_from_edges[rel.from] = [];
+            }
+            if (!dataHandler.mapping_node_to_to_edges[rel.to]) {
+                dataHandler.mapping_node_to_to_edges[rel.to] = [];
+            }
+            dataHandler.mapping_node_to_from_edges[rel.from].push(rel.to);
+            dataHandler.mapping_node_to_to_edges[rel.to].push(rel.from);
         }
         // check if nodes got deleted
         var old_rel_ids = that.edges.getIds();
@@ -936,6 +963,23 @@ class EventGraph {
             }
         });
         eventGraph.nodes.update(update);
+    }
+
+    remove_leaves() {
+        var nodeIds = []
+        eventGraph.nodes.forEach(function (node) {
+            // Hide node that have no outgoing references and are not being targetted by others
+            if (
+                dataHandler.mapping_node_to_from_edges[node.id] === undefined &&
+                (
+                    dataHandler.mapping_node_to_to_edges[node.id] === undefined ||
+                    dataHandler.mapping_node_to_to_edges[node.id].length < 2
+                )
+            ) {
+                nodeIds.push(node.id)
+            }
+        })
+        eventGraph.hideNode(nodeIds)
     }
 
     // state true: loading
@@ -1352,6 +1396,8 @@ class DataHandler {
         this.mapping_value_to_nodeID = new Map();
         this.mapping_obj_relation_value_to_nodeID = new Map();
         this.mapping_uuid_to_template = new Map();
+        this.mapping_node_to_from_edges = {};
+        this.mapping_node_to_to_edges = {};
         this.selected_type_to_display = "";
         this.extended_event = $('#eventgraph_network').data('extended') == 1 ? true : false;
         this.networkHistoryJsonData = new Map();
@@ -1614,16 +1660,23 @@ class MispInteraction {
     }
 
     can_create_reference(id) {
-        return this.nodes.get(id).group == "object";
+        var node = this.nodes.get(id)
+        return node.group == "object";
     }
 
     can_be_referenced(id) {
         var res;
-        if (this.nodes.get(id).group == "object") {
+        var node = this.nodes.get(id)
+        if (node.event_id != scope_id) {
+            showMessage('fail', 'Cannot reference a node not belonging in this event')
+            return false;
+        }
+        if (node.group == "object") {
             res = true;
-        } else if (this.nodes.get(id).group.slice(0, 9) == "attribute") {
+        } else if (node.group.slice(0, 9) == "attribute") {
             res = true;
         } else {
+            showMessage('fail', 'This node cannot be referenced')
             res = false;
         }
         return res;
@@ -1760,26 +1813,32 @@ class MispInteraction {
 * UTILS
 * ========*/
 function drawExtendedEventHull(ctx, nodes, color, text) {
-    ctx.fillStyle = color+'88';
-    var hull = getHullFromPoints(nodes);
+    ctx.fillStyle = color+'55';
+    ctx.strokeStyle = color+'aa';
+    var centroid = getCentroid(nodes);
+    var hull = getHullFromPoints(nodes, centroid);
+    var hullExtraPoints = []
+    hull.forEach(p => {
+        hullExtraPoints.push(applyAngularOffsetForCentroid(p, centroid, false))
+        hullExtraPoints.push(p)
+        hullExtraPoints.push(applyAngularOffsetForCentroid(p, centroid, true))
+    })
+    centroid = getCentroid(hullExtraPoints);
+    var hullFinal = getHullFromPoints(hullExtraPoints, centroid);
+    hullFinal.push(hullFinal[0])
 
-    var start = hull[0];
-    var end = hull[hull.length-1];
-    var prev = start;
     ctx.beginPath();
-    ctx.moveTo(start.x, start.y);
-    for (var i=1; i<hull.length; i++) {
-        var cur = hull[i];
-        ctx.lineTo(cur.x,cur.y);
-        prev = cur;
+    ctx.moveTo(hullFinal[0].x, hullFinal[0].y);
+    for(var i=1; i<hullFinal.length; i++) {
+        var cp_x_mid = (hullFinal[i-1].x + hullFinal[i].x) / 2;
+        var cp_y_mid = (hullFinal[i-1].y + hullFinal[i].y) / 2;
+        var cp = applyOffsetForCentroid({x: cp_x_mid, y: cp_y_mid}, centroid, 0.2)
+        ctx.quadraticCurveTo(cp.x, cp.y, hullFinal[i].x, hullFinal[i].y);
+        ctx.stroke();
     }
-    ctx.moveTo(end.x, end.y);
-    var centerX = (end.x+start.x)/2;
-    var centerY = (end.y+start.y)/2;
-    ctx.quadraticCurveTo(centerX,centerY,start.x,start.y);
+    ctx.stroke();
     ctx.fill();
 
-    var centroid = getCentroid(hull);
     ctx.beginPath();
     ctx.font="30px Verdana";
     ctx.fillStyle = getTextColour(color);
@@ -1795,10 +1854,11 @@ function orientation(p, q, r) {
 }
 // Implementation of Gift wrapping algorithm (jarvis march in 2D)
 // Inspired from https://www.geeksforgeeks.org/convex-hull-set-1-jarviss-algorithm-or-wrapping/
-function getHullFromPoints(points) {
+function getHullFromPoints(points, centroid) {
     var n = points.length;
     var l = 0;
     var hull = [];
+    var cur_point;
     // get leftmost point
     for (var i=0; i<n; i++) {
         l = points[l].x > points[i].x ? l : i;
@@ -1807,7 +1867,9 @@ function getHullFromPoints(points) {
     var p = l;
     var q;
     do {
-        hull.push(points[p]);
+        cur_point = points[p]
+        cur_point = applyOffsetForCentroid(cur_point, centroid)
+        hull.push(cur_point);
 
         q = (p+1) % n;
         for (var i=0; i<n; i++) {
@@ -1820,21 +1882,40 @@ function getHullFromPoints(points) {
     return hull;
 }
 function getCentroid(coordList) {
-    var cx = 0;
-    var cy = 0;
-    var a = 0;
-    for (var i=0; i<coordList.length; i++) {
-        var ci = coordList[i];
-        var cj = i+1 == coordList.length ? coordList[0] : coordList[i+1]; // j = i+1 AND loop around
-        var mul = (ci.x*cj.y - cj.x*ci.y);
-        cx += (ci.x + cj.x)*mul;
-        cy += (ci.y + cj.y)*mul;
-        a += mul;
+    var centroid = {x: 0, y: 0};
+    coordList.forEach(function(point) {
+        centroid.x += point.x;
+        centroid.y += point.y;
+    })
+    centroid.x = centroid.x / coordList.length;
+    centroid.y = centroid.y / coordList.length;
+    return centroid;
+}
+function applyOffsetForCentroid(point, centroid, ratio) {
+    ratio = ratio === undefined ? 1.0 : ratio;
+    var DEFAULT_OFFSET_X = 45 * ratio;
+    var DEFAULT_OFFSET_Y = 22 * ratio;
+    var slope = (point.y - centroid.y) / (point.x - centroid.x);
+    var angle = Math.atan(slope);
+    var sign = point.x > centroid.x ? 1 : -1;
+    var newPoint = {
+        x: point.x + Math.cos(angle) * DEFAULT_OFFSET_X * sign,
+        y: point.y + Math.sin(angle) * DEFAULT_OFFSET_Y * sign,
     }
-    a = a / 2;
-    cx = cx / (6*a);
-    cy = cy / (6*a);
-    return {x: cx, y: cy};
+    return newPoint;
+}
+function applyAngularOffsetForCentroid(point, centroid, left) {
+    var DEFAULT_ANGULAR_OFFSET = 2;
+    var DEFAULT_OFFSET = 40;
+    var slope = (point.y - centroid.y) / (point.x - centroid.x);
+    var angle = Math.atan(slope);
+    angle = angle + ((left ? 1 : -1) * DEFAULT_ANGULAR_OFFSET);
+    var sign = point.x > centroid.x ? 1 : -1
+    var newPoint = {
+        x: point.x + Math.cos(angle) * DEFAULT_OFFSET * sign,
+        y: point.y + Math.sin(angle) * DEFAULT_OFFSET * sign,
+    }
+    return newPoint;
 }
 
 function generate_background_shortcuts(shortcut_text) {

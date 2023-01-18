@@ -7,36 +7,37 @@
             'model' => $modelForForm,
             'fields' => array(
                 array(
-                    'field' => 'event_id',
-                    'class' => 'org-id-picker-hidden-field',
-                    'type' => 'text',
-                    'hidden' => true
-                ),
-                array(
                     'field' => 'category',
                     'class' => 'input',
                     'empty' => __('(choose one)'),
                     'options' => $categories,
-                    'stayInLine' => 1
+                    'stayInLine' => 1,
+                    'type' => 'dropdown',
+                    'required' => false
                 ),
                 array(
                     'field' => 'type',
                     'class' => 'input',
                     'empty' => __('(choose category first)'),
-                    'options' => $types
+                    'options' => $types,
+                    'type' => 'dropdown',
+                    'required' => false,
+                    'disabled' => $action === 'edit' && $attachment,
                 ),
                 array(
                     'field' => 'distribution',
                     'class' => 'input',
                     'options' => $distributionLevels,
                     'default' => isset($attribute['Attribute']['distribution']) ? $attribute['Attribute']['distribution'] : $initialDistribution,
-                    'stayInLine' => 1
+                    'stayInLine' => 1,
+                    'type' => 'dropdown'
                 ),
                 array(
                     'field' => 'sharing_group_id',
                     'class' => 'input',
                     'options' => $sharingGroups,
-                    'label' => __("Sharing Group")
+                    'label' => __("Sharing Group"),
+                    'type' => 'dropdown'
                 ),
                 array(
                     'field'=> 'value',
@@ -52,14 +53,16 @@
                     'label' => __("Contextual Comment")
                 ),
                 array(
+                    'field' => 'batch_import',
+                    'type' => 'checkbox',
+                    'requirements' => $action === 'add',
+                    'label' => __('Batch import') . ' <span class="fas fa-info-circle" data-toggle="popover" data-trigger="hover" data-content="' . __('Insert multiple attributes to value field separated by new line') .'"></span>',
+                ),
+                array(
                     'field' => 'to_ids',
                     'type' => 'checkbox',
                     'label' => __("For Intrusion Detection System"),
                     //'stayInLine' => 1
-                ),
-                array(
-                    'field' => 'batch_import',
-                    'type' => 'checkbox'
                 ),
                 array(
                     'field' => 'disable_correlation',
@@ -68,12 +71,14 @@
                 array(
                     'field' => 'first_seen',
                     'type' => 'text',
-                    'hidden' => true
+                    'hidden' => true,
+                    'required' => false
                 ),
                 array(
                     'field' => 'last_seen',
                     'type' => 'text',
-                    'hidden' => true
+                    'hidden' => true,
+                    'required' => false
                 ),
             ),
             'submit' => array(
@@ -85,7 +90,8 @@
                 )
             ),
             'metaFields' => array(
-                '<div id="bothSeenSliderContainer" style="height: 170px;"></div>'
+                '<div id="notice_message" style="display: none;"></div>',
+                '<div id="bothSeenSliderContainer"' . ($ajax ? '' : ' style="height: 170px;"') . '></div>'
             )
         )
     ));
@@ -93,29 +99,12 @@
         echo $this->element('/genericElements/SideMenu/side_menu', array('menuList' => 'event', 'menuItem' => 'addAttribute', 'event' => $event));
     }
 ?>
-
-<script type="text/javascript">
+<script>
+    var non_correlating_types = <?= json_encode($nonCorrelatingTypes) ?>;
     var notice_list_triggers = <?php echo $notice_list_triggers; ?>;
-    var category_type_mapping = <?php echo json_encode(array_map(function($value) {
-        return array_combine($value['types'], $value['types']);
+    var category_type_mapping = <?= json_encode(array_map(function(array $value) {
+        return $value['types'];
     }, $categoryDefinitions)); ?>;
-
-    $('#AttributeDistribution').change(function() {
-        checkSharingGroup('Attribute');
-    });
-
-    $('#AttributeCategory').change(function() {
-        formCategoryChanged('Attribute');
-        $('#AttributeType').chosen('destroy').chosen();
-        if ($(this).val() === 'Internal reference') {
-            $("#AttributeDistribution").val('0');
-            checkSharingGroup('Attribute');
-        }
-    });
-
-    $("#AttributeCategory, #AttributeType").change(function() {
-        checkNoticeList('attribute');
-    });
 
     $(function() {
         <?php
@@ -127,8 +116,31 @@
         ?>
         checkSharingGroup('Attribute');
 
-        $('#AttributeType').closest('form').submit(function( event ) {
-            if ($('#AttributeType').val() === 'datetime') {
+        var $attributeType = $('#AttributeType');
+        var $attributeCategory = $('#AttributeCategory');
+
+        $('#AttributeDistribution').change(function() {
+            checkSharingGroup('Attribute');
+        });
+
+        $attributeCategory.change(function() {
+            formCategoryChanged('Attribute');
+            $attributeType.trigger('chosen:updated');
+            if ($(this).val() === 'Internal reference') {
+                $("#AttributeDistribution").val('0');
+                checkSharingGroup('Attribute');
+            }
+            checkNoticeList('attribute');
+        });
+
+        $attributeType.change(function () {
+            formTypeChanged('Attribute');
+            checkNoticeList('attribute');
+        });
+        formTypeChanged('Attribute');
+
+        $attributeType.closest('form').submit(function( event ) {
+            if ($attributeType.val() === 'datetime') {
                 // add timezone of the browser if not set
                 var allowLocalTZ = true;
                 var $valueInput = $('#AttributeValue')
@@ -151,17 +163,17 @@
                 }
             }
         });
-        
+
         <?php if (!$ajax): ?>
-            $('#AttributeType').chosen();
-            $('#AttributeCategory').chosen();
+            $attributeType.chosen();
+            $attributeCategory.chosen();
         <?php else: ?>
             $('#genericModal').on('shown', function() {
-                $('#AttributeType').chosen();
-                $('#AttributeCategory').chosen();
+                $attributeType.chosen();
+                $attributeCategory.chosen();
             })
         <?php endif; ?>
     });
 </script>
 <?php echo $this->element('form_seen_input'); ?>
-<?php echo $this->Js->writeBuffer(); // Write cached scripts
+

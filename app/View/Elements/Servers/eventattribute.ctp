@@ -31,8 +31,7 @@
             </li>
         </ul>
     </div>
-<br />
-<div id="attributeList" class="attributeListContainer">
+<div id="attributeList">
     <table class="table table-striped table-condensed">
         <tr>
             <th><?php echo $this->Paginator->sort('timestamp', __('Date'));?></th>
@@ -107,8 +106,5 @@
         <?php
             endif;
         ?>
-        $('.screenshot').click(function() {
-            screenshotPopup($(this).attr('src'), $(this).attr('title'));
-        });
     });
 </script>

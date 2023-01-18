@@ -38,7 +38,7 @@ class SyncTool
         return $this->createHttpSocket($params);
     }
 
-    public function setupHttpSocketFeed($feed = null)
+    public function setupHttpSocketFeed()
     {
         return $this->createHttpSocket(['compress' => true]);
     }
@@ -57,6 +57,28 @@ class SyncTool
                 throw new Exception("CA file '$caPath' doesn't exists.");
             }
             $params['ssl_cafile'] = $caPath;
+        }
+
+        if ($minTlsVersion = Configure::read('Security.min_tls_version')) {
+            $version = 0;
+            switch ($minTlsVersion) {
+                case 'tlsv1_0':
+                    $version |= STREAM_CRYPTO_METHOD_TLSv1_0_CLIENT;
+                case 'tlsv1_1':
+                    $version |= STREAM_CRYPTO_METHOD_TLSv1_1_CLIENT;
+                case 'tlsv1_2':
+                    $version |= STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT;
+                case 'tlsv1_3':
+                    if (defined('STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT')) {
+                        $version |= STREAM_CRYPTO_METHOD_TLSv1_3_CLIENT;
+                    } else if ($minTlsVersion === 'tlsv1_3') {
+                        throw new Exception("TLSv1.3 is not supported by PHP.");
+                    }
+                    break;
+                default:
+                    throw new InvalidArgumentException("Invalid `Security.min_tls_version` option $minTlsVersion");
+            }
+            $params['ssl_crypto_method'] = $version;
         }
 
         App::uses('HttpSocketExtended', 'Tools');
@@ -93,6 +115,35 @@ class SyncTool
     }
 
     /**
+     * @param array $server
+     * @return array|void
+     * @throws Exception
+     */
+    public static function getServerCaCertificateInfo(array $server)
+    {
+        if (!$server['Server']['cert_file']) {
+            return;
+        }
+
+        $caCertificate = new File(APP . "files" . DS . "certs" . DS . $server['Server']['id'] . '.pem');
+        if (!$caCertificate->exists()) {
+            throw new Exception("Certificate file '{$caCertificate->pwd()}' doesn't exists.");
+        }
+
+        $certificateContent = $caCertificate->read();
+        if ($certificateContent === false) {
+            throw new Exception("Could not read '{$caCertificate->pwd()}' file with certificate.");
+        }
+
+        $certificate = openssl_x509_read($certificateContent);
+        if (!$certificate) {
+            throw new Exception("Couldn't read certificate: " . openssl_error_string());
+        }
+
+        return self::parseCertificate($certificate);
+    }
+
+    /**
      * @param string $certificateContent PEM encoded certificate and private key.
      * @return array
      * @throws Exception
@@ -101,11 +152,11 @@ class SyncTool
     {
         $certificate = openssl_x509_read($certificateContent);
         if (!$certificate) {
-            throw new Exception("Could't parse certificate: " . openssl_error_string());
+            throw new Exception("Couldn't read certificate: " . openssl_error_string());
         }
         $privateKey = openssl_pkey_get_private($certificateContent);
         if (!$privateKey) {
-            throw new Exception("Could't get private key from certificate: " . openssl_error_string());
+            throw new Exception("Couldn't get private key from certificate: " . openssl_error_string());
         }
         $verify = openssl_x509_check_private_key($certificate, $privateKey);
         if (!$verify) {
@@ -123,7 +174,7 @@ class SyncTool
     {
         $parsed = openssl_x509_parse($certificate);
         if (!$parsed) {
-            throw new Exception("Could't get parse X.509 certificate: " . openssl_error_string());
+            throw new Exception("Couldn't get parse X.509 certificate: " . openssl_error_string());
         }
         $currentTime = new DateTime();
         $output = [

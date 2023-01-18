@@ -1,21 +1,20 @@
 <?php
-
 App::uses('AppModel', 'Model');
 
 class Log extends AppModel
 {
-    public $warningActions = array(
+    const WARNING_ACTIONS = array(
         'warning',
         'change_pw',
         'login_fail',
         'version_warning',
         'auth_fail'
     );
-    public $errorActions = array(
+    const ERROR_ACTIONS = array(
         'error'
     );
     public $validate = array(
-            'action' => array(
+        'action' => array(
             'rule' => array(
                 'inList',
                 array( // ensure that the length of the rules is < 20 in length
@@ -39,11 +38,15 @@ class Log extends AppModel
                     'enable',
                     'enrichment',
                     'error',
+                    'execute_blueprint',
+                    'execute_workflow',
+                    'exec_module',
                     'export',
                     'fetchEvent',
                     'file_upload',
                     'galaxy',
                     'include_formula',
+                    'load_module',
                     'login',
                     'login_fail',
                     'logout',
@@ -69,10 +72,13 @@ class Log extends AppModel
                     'update',
                     'update_database',
                     'update_db_worker',
+                    'updateCryptoKeys',
                     'upgrade_24',
                     'upload_sample',
+                    'validateSig',
                     'version_warning',
-                    'warning'
+                    'warning',
+                    'wipe_default'
                 )
             ),
             'message' => 'Options : ...'
@@ -101,6 +107,10 @@ class Log extends AppModel
         'email' => array('values' => array('admin_email'))
     );
 
+    public $actsAs = ['LightPaginator'];
+
+    private $elasticSearchClient;
+
     /**
      * Null when not defined, false when not enabled
      * @var Syslog|null|false
@@ -113,30 +123,23 @@ class Log extends AppModel
             return false;
         }
         if (Configure::read('MISP.log_client_ip')) {
-            $ip_header = 'REMOTE_ADDR';
-            if (Configure::read('MISP.log_client_ip_header')) {
-                $ip_header = Configure::read('MISP.log_client_ip_header');
-            }
-
-            if (isset($_SERVER[$ip_header])) {
-                $this->data['Log']['ip'] = $_SERVER[$ip_header];
-            }
+            $this->data['Log']['ip'] = $this->_remoteIp();
         }
         $setEmpty = array('title' => '', 'model' => '', 'model_id' => 0, 'action' => '', 'user_id' => 0, 'change' => '', 'email' => '', 'org' => '', 'description' => '', 'ip' => '');
         foreach ($setEmpty as $field => $empty) {
-            if (!isset($this->data['Log'][$field]) || empty($this->data['Log'][$field])) {
+            if (empty($this->data['Log'][$field])) {
                 $this->data['Log'][$field] = $empty;
             }
         }
         if (!isset($this->data['Log']['created'])) {
             $this->data['Log']['created'] = date('Y-m-d H:i:s');
         }
-        if (!isset($this->data['Log']['org']) || empty($this->data['Log']['org'])) {
+        if (empty($this->data['Log']['org'])) {
             $this->data['Log']['org'] = 'SYSTEM';
         }
         $truncate_fields = array('title', 'change', 'description');
         foreach ($truncate_fields as $tf) {
-            if (isset($this->data['Log'][$tf]) && strlen($this->data['Log'][$tf]) >= 65535) {
+            if (strlen($this->data['Log'][$tf]) >= 65535) {
                 $this->data['Log'][$tf] = substr($this->data['Log'][$tf], 0, 65532) . '...';
             }
         }
@@ -149,31 +152,29 @@ class Log extends AppModel
 
     public function returnDates($org = 'all')
     {
-        $dataSourceConfig = ConnectionManager::getDataSource('default')->config;
-        $dataSource = $dataSourceConfig['datasource'];
         $conditions = array();
         $this->Organisation = ClassRegistry::init('Organisation');
         if ($org !== 'all') {
-            $org = $this->Organisation->find('first', array('fields' => array('name'), 'recursive' => -1, 'conditions' => array('UPPER(Organisation.name) LIKE' => strtoupper($org))));
+            $org = $this->Organisation->fetchOrg($org);
             if (empty($org)) {
-                return MethodNotAllowedException('Invalid organisation.');
+                throw new MethodNotAllowedException('Invalid organisation.');
             }
-            $conditions['org'] = $org['Organisation']['name'];
+            $conditions['org'] = $org['name'];
         }
         $conditions['AND']['NOT'] = array('action' => array('login', 'logout', 'changepw'));
-        if ($dataSource == 'Database/Mysql' || $dataSource == 'Database/MysqlObserver') {
+        if ($this->isMysql()) {
             $validDates = $this->find('all', array(
                     'fields' => array('DISTINCT UNIX_TIMESTAMP(DATE(created)) AS Date', 'count(id) AS count'),
                     'conditions' => $conditions,
                     'group' => array('Date'),
                     'order' => array('Date')
             ));
-        } elseif ($dataSource == 'Database/Postgres') {
+        } else {
             // manually generate the query for Postgres
             // cakephp ORM would escape "DATE" datatype in CAST expression
             $condnotinaction = "'" . implode("', '", $conditions['AND']['NOT']['action']) . "'";
             if (!empty($conditions['org'])) {
-                $condOrg = ' AND org = "' . $conditions['org'] . '"';
+                $condOrg = sprintf('AND org = %s', $this->getDataSource()->value($conditions['org']));
             } else {
                 $condOrg = '';
             }
@@ -199,20 +200,23 @@ class Log extends AppModel
      * @param int $modelId
      * @param string $title
      * @param string|array $change
-     * @return array
+     * @return array|null
      * @throws Exception
      * @throws InvalidArgumentException
      */
     public function createLogEntry($user, $action, $model, $modelId = 0, $title = '', $change = '')
     {
+        if (in_array($action, ['tag', 'galaxy', 'publish', 'publish_sightings', 'enable', 'edit'], true) && Configure::read('MISP.log_new_audit')) {
+            return; // Do not store tag changes when new audit is enabled
+        }
         if ($user === 'SYSTEM') {
-            $user = array('Organisation' => array('name' => 'SYSTEM'), 'email' => 'SYSTEM', 'id' => 0);
+            $user = ['Organisation' => ['name' => 'SYSTEM'], 'email' => 'SYSTEM', 'id' => 0];
         } else if (!is_array($user)) {
             throw new InvalidArgumentException("User must be array or 'SYSTEM' string.");
         }
 
         if (is_array($change)) {
-            $output = array();
+            $output = [];
             foreach ($change as $field => $values) {
                 $isSecret = strpos($field, 'password') !== false || ($field === 'authkey' && Configure::read('Security.do_not_log_authkeys'));
                 if ($isSecret) {
@@ -226,7 +230,7 @@ class Log extends AppModel
         }
 
         $this->create();
-        $result = $this->save(array(
+        $result = $this->save(['Log' => [
             'org' => $user['Organisation']['name'],
             'email' => $user['email'],
             'user_id' => $user['id'],
@@ -235,13 +239,36 @@ class Log extends AppModel
             'change' => $change,
             'model' => $model,
             'model_id' => $modelId,
-        ));
+        ]]);
 
         if (!$result) {
+            if ($action === 'request' && !empty(Configure::read('MISP.log_paranoid_skip_db'))) {
+                return null;
+            }
+            if (!empty(Configure::read('MISP.log_skip_db_logs_completely'))) {
+                return null;
+            }
+
             throw new Exception("Cannot save log because of validation errors: " . json_encode($this->validationErrors));
         }
 
         return $result;
+    }
+
+    /**
+     * @param array|string $user
+     * @param string $action
+     * @param string $model
+     * @param string $title
+     * @param array $validationErrors
+     * @param array $fullObject
+     * @throws Exception
+     */
+    public function validationError($user, $action, $model, $title, array $validationErrors, array $fullObject)
+    {
+        $this->log($title, LOG_WARNING);
+        $change = 'Validation errors: ' . json_encode($validationErrors) . ' Full ' . $model  . ': ' . json_encode($fullObject);
+        $this->createLogEntry($user, $action, $model, 0, $title, $change);
     }
 
     // to combat a certain bug that causes the upgrade scripts to loop without being able to set the correct version
@@ -288,32 +315,31 @@ class Log extends AppModel
         ));
     }
 
-
     public function pruneUpdateLogsRouter($user)
     {
         if (Configure::read('MISP.background_jobs')) {
+
+            /** @var Job $job */
             $job = ClassRegistry::init('Job');
-            $job->create();
-            $data = array(
-                    'worker' => 'default',
-                    'job_type' => 'prune_update_logs',
-                    'job_input' => 'All update entries',
-                    'status' => 0,
-                    'retries' => 0,
-                    'org_id' => $user['org_id'],
-                    'org' => $user['Organisation']['name'],
-                    'message' => 'Purging the heretic.',
+            $jobId = $job->createJob(
+                $user,
+                Job::WORKER_DEFAULT,
+                'prune_update_logs',
+                'All update entries',
+                'Purging the heretic.'
             );
-            $job->save($data);
-            $jobId = $job->id;
-            $process_id = CakeResque::enqueue(
-                    'default',
-                    'AdminShell',
-                    array('prune_update_logs', $jobId, $user['id']),
-                    true
+
+            return $this->getBackgroundJobsTool()->enqueue(
+                BackgroundJobsTool::DEFAULT_QUEUE,
+                BackgroundJobsTool::CMD_ADMIN,
+                [
+                    'prune_update_logs',
+                    $jobId,
+                    $user['id']
+                ],
+                true,
+                $jobId
             );
-            $job->saveField('process_id', $process_id);
-            return $process_id;
         } else {
             $result = $this->pruneUpdateLogs(false, $user);
             return $result;
@@ -322,9 +348,8 @@ class Log extends AppModel
 
     public function logData($data)
     {
-        if (Configure::read('Plugin.ZeroMQ_enable') && Configure::read('Plugin.ZeroMQ_audit_notifications_enable')) {
-            $pubSubTool = $this->getPubSubTool();
-            $pubSubTool->publish($data, 'audit', 'log');
+        if ($this->pubToZmq('audit')) {
+            $this->getPubSubTool()->publish($data, 'audit', 'log');
         }
 
         $this->publishKafkaNotification('audit', $data, 'log');
@@ -359,13 +384,13 @@ class Log extends AppModel
             }
         }
         if ($this->syslog) {
-            $action = 'info';
+            $action = LOG_INFO;
             if (isset($data['Log']['action'])) {
-                if (in_array($data['Log']['action'], $this->errorActions)) {
-                    $action = 'err';
+                if (in_array($data['Log']['action'], self::ERROR_ACTIONS, true)) {
+                    $action = LOG_ERR;
                 }
-                if (in_array($data['Log']['action'], $this->warningActions)) {
-                    $action = 'warning';
+                if (in_array($data['Log']['action'], self::WARNING_ACTIONS, true)) {
+                    $action = LOG_WARNING;
                 }
             }
 
@@ -375,6 +400,8 @@ class Log extends AppModel
             }
             if (!empty($data['Log']['description'])) {
                 $entry .= " -- {$data['Log']['description']}";
+            } else if (!empty($data['Log']['change'])) {
+                $entry .= " -- " . json_encode($data['Log']['change']);
             }
             $this->syslog->write($action, $entry);
         }
@@ -1117,5 +1144,16 @@ class Log extends AppModel
                 }
                 break;
         }
+    }
+
+    private function getElasticSearchTool()
+    {
+        if (!$this->elasticSearchClient) {
+            App::uses('ElasticSearchClient', 'Tools');
+            $client = new ElasticSearchClient();
+            $client->initTool();
+            $this->elasticSearchClient = $client;
+        }
+        return $this->elasticSearchClient;
     }
 }

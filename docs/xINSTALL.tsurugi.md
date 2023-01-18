@@ -31,7 +31,7 @@ sudo dpkg-reconfigure locales
 
 To install MISP on Tsurugi copy paste this in your r00t shell:
 ```bash
-wget -O /tmp/misp-tsurugi.sh https://raw.githubusercontent.com/MISP/MISP/2.4/INSTALL/xINSTALL.tsurugi.txt && bash /tmp/misp-tsurugi.sh
+wget --no-cache -O /tmp/misp-tsurugi.sh https://raw.githubusercontent.com/MISP/MISP/2.4/INSTALL/xINSTALL.tsurugi.txt && bash /tmp/misp-tsurugi.sh
 ```
 
 !!! warning
@@ -118,6 +118,9 @@ function installMISPonTsurugi() {
   post_max_size=50M
   max_execution_time=300
   memory_limit=2048M
+  session.sid_length=32
+  session.use_strict_mode=1
+
   PHP_INI=/etc/php/7.0/apache2/php.ini
 
   # apt config
@@ -228,7 +231,7 @@ function installMISPonTsurugi() {
 
   cd ${PATH_TO_MISP}/app
   mkdir /var/www/.composer ; chown www-data:www-data /var/www/.composer
-  ${SUDO_WWW} php composer.phar install
+  ${SUDO_WWW} php composer.phar install --no-dev
 
   ${SUDO_WWW} cp -fa ${PATH_TO_MISP}/INSTALL/setup/config.php ${PATH_TO_MISP}/app/Plugin/CakeResque/Config/config.php
 
@@ -410,6 +413,8 @@ function installMISPonTsurugi() {
   do
       sed -i "s/^\($key\).*/\1 = $(eval echo \${$key})/" $PHP_INI
   done
+  sudo sed -i "s/^\(session.sid_length\).*/\1 = $(eval echo \${session0sid_length})/" $PHP_INI
+  sudo sed -i "s/^\(session.use_strict_mode\).*/\1 = $(eval echo \${session0use_strict_mode})/" $PHP_INI
 
   systemctl restart apache2
 

@@ -51,6 +51,13 @@
                     'data_path' => 'Tag.hide_tag',
                 ],
                 [
+                    'name' => __('Local Only'),
+                    'sort' => 'Tag.local_only',
+                    'element' => 'boolean',
+                    'class' => 'short',
+                    'data_path' => 'Tag.local_only',
+                ],
+                [
                     'name' => __('Name'),
                     'sort' => 'Tag.name',
                     'class' => 'short',
@@ -83,7 +90,6 @@
                 ],
                 [
                     'name' => __('Tagged events'),
-                    'sort' => 'Tag.count',
                     'class' => 'short',
                     'element' => 'count',
                     'data_path' => 'Tag.count',
@@ -91,7 +97,6 @@
                 ],
                 [
                     'name' => __('Tagged attributes'),
-                    'sort' => 'Tag.attribute_count',
                     'class' => 'short',
                     'element' => 'count',
                     'data_path' => 'Tag.attribute_count',

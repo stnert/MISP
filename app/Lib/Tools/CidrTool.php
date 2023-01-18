@@ -67,6 +67,32 @@ class CidrTool
     }
 
     /**
+     * @param string $cidr
+     * @return bool
+     */
+    public static function validate($cidr)
+    {
+        $parts = explode('/', $cidr, 2);
+        $ipBytes = inet_pton($parts[0]);
+        if ($ipBytes === false) {
+            return false;
+        }
+
+        if (isset($parts[1])) {
+            if (!ctype_digit($parts[1])) {
+                return false;
+            }
+
+            $maximumNetmask = strlen($ipBytes) === 4 ? 32 : 128;
+            if ($parts[1] > $maximumNetmask || $parts[1] < 0) {
+                return false; // Netmask part of CIDR is invalid
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * Using solution from https://github.com/symfony/symfony/blob/master/src/Symfony/Component/HttpFoundation/IpUtils.php
      *
      * @param array $ip

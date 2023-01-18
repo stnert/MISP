@@ -1,15 +1,14 @@
 <?php
     class ClusterRelationsGraphTool
     {
-        private $GalaxyCluster = false;
-        private $user = false;
+        private $GalaxyCluster;
+        private $user;
         private $lookup = array();
 
-        public function construct($user, $GalaxyCluster)
+        public function __construct(array $user, GalaxyCluster $GalaxyCluster)
         {
             $this->GalaxyCluster = $GalaxyCluster;
             $this->user = $user;
-            return true;
         }
         
         /**
@@ -75,7 +74,7 @@
                         'conditions' => array(
                             'referenced_galaxy_cluster_uuid' => $cluster['GalaxyCluster']['uuid']
                         ),
-                        'contain' => array('Org', 'Orgc', 'SharingGroup'),
+                        'contain' => array('SharingGroup', 'GalaxyClusterRelationTag' => 'Tag'),
                     ));
                     if (!empty($referencingRelations)) {
                         foreach ($referencingRelations as $relation) {
@@ -93,9 +92,9 @@
                                 $nodes[$referencingClusterUuid]['group'] = $referencingCluster['GalaxyCluster']['type'];
                                 $links[] = array(
                                     'source' => $referencingClusterUuid,
-                                    'target' =>   $relation['GalaxyClusterRelation']['referenced_galaxy_cluster_uuid'],
+                                    'target' => $relation['GalaxyClusterRelation']['referenced_galaxy_cluster_uuid'],
                                     'type' => $relation['GalaxyClusterRelation']['referenced_galaxy_cluster_type'],
-                                    'tag' =>  isset($relation['Tag']) ? $relation['Tag'] : array(),
+                                    'tag' =>  isset($relation['GalaxyClusterRelationTag']) ? Hash::extract($relation, '{n}.Tag') : array(),
                                 );
                             }
                         }

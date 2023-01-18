@@ -1,9 +1,7 @@
 <?php
 $indexOptions = array(
+    'containerId' => 'elements',
     'data' => array(
-        'paginatorOptions' => array(
-            'update' => '#elements_div',
-        ),
         'data' => $elements,
         'top_bar' => array(
             'children' => array(
@@ -16,7 +14,7 @@ $indexOptions = array(
                             'onClickParams' => [
                                 h($clusterId) . '/context:all',
                                 $baseurl . '/galaxy_elements/index',
-                                '#elements_div'
+                                '#elements_content'
                             ],
                         ),
                         array(
@@ -26,7 +24,7 @@ $indexOptions = array(
                             'onClickParams' => [
                                 h($clusterId) . '/context:JSONView',
                                 $baseurl . '/galaxy_elements/index',
-                                '#elements_div'
+                                '#elements_content'
                             ],
                         ),
                     )
@@ -41,7 +39,7 @@ $indexOptions = array(
                             'text' => __('Add JSON as cluster\'s elements'),
                             'title' => __('The provided JSON will be converted into Galaxy Cluster Elements'),
                             'fa-icon' => 'plus',
-                            'requirement' => $canModify && ($context === 'JSONView'),
+                            'requirement' => $canModify && $context === 'JSONView',
                         ),
                     )
                 ),
@@ -76,7 +74,7 @@ $indexOptions = array(
     )
 );
 
-if ($context == 'JSONView') {
+if ($context === 'JSONView') {
     $indexOptions['data']['fields'] = [];
     $indexOptions['data']['data'] = [];
     $indexOptions['data']['skip_pagination'] = true;
@@ -84,11 +82,9 @@ if ($context == 'JSONView') {
 }
 
 echo $this->element('/genericElements/IndexTable/index_table', $indexOptions);
-if ($context == 'JSONView') {
-    echo sprintf('<div id="elementJSONDiv" class="well well-small">%s</div>', json_encode($JSONElements));
+if ($context === 'JSONView') {
+    echo sprintf('<div id="elementJSONDiv" class="well well-small">%s</div>', json_encode(h($JSONElements)));
 }
-
-echo $this->Js->writeBuffer();
 ?>
 
 <script>

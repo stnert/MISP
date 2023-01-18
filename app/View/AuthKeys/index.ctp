@@ -1,5 +1,8 @@
 <?php
     echo sprintf('<div%s>', empty($ajax) ? ' class="index"' : '');
+    if (!$advancedEnabled) {
+        echo '<div class="alert">' . __('Advanced auth keys are not enabled.') . '</div>';
+    }
     echo $this->element('genericElements/IndexTable/index_table', [
         'data' => [
             'data' => $data,
@@ -11,16 +14,11 @@
                         'children' => [
                             'data' => [
                                 'type' => 'simple',
+                                'fa-icon' => 'plus',
                                 'text' => __('Add authentication key'),
-                                'class' => 'btn btn-primary',
-                                'onClick' => 'openGenericModal',
-                                'onClickParams' => [
-                                    sprintf(
-                                        '%s/auth_keys/add%s',
-                                        $baseurl,
-                                        empty($user_id) ? '' : ('/' . $user_id)
-                                    )
-                                ]
+                                'class' => 'btn-primary modal-open',
+                                'url' => "$baseurl/auth_keys/add" . (empty($user_id) ? '' : ('/' . $user_id)),
+                                'requirement' => $canCreateAuthkey
                             ]
                         ]
                     ],
@@ -45,6 +43,7 @@
                     'element' => empty($user_id) ? 'links' : 'generic_field',
                     'url' => $baseurl . '/users/view',
                     'url_params_data_paths' => ['User.id'],
+                    'requirement' => $me['Role']['perm_admin'] || $me['Role']['perm_site_admin'],
                 ],
                 [
                     'name' => __('Auth Key'),
@@ -63,11 +62,16 @@
                     'data_path' => 'AuthKey.last_used',
                     'element' => 'datetime',
                     'requirements' => $keyUsageEnabled,
+                    'empty' => __('Never'),
                 ],
                 [
                     'name' => __('Comment'),
                     'sort' => 'AuthKey.comment',
                     'data_path' => 'AuthKey.comment',
+                ],
+                [
+                    'name' => __('Allowed IPs'),
+                    'data_path' => 'AuthKey.allowed_ips',
                 ],
             ],
             'title' => empty($ajax) ? __('Authentication key Index') : false,
@@ -80,14 +84,21 @@
                         'AuthKey.id'
                     ),
                     'icon' => 'eye',
-                    'dbclickAction' => true
+                    'dbclickAction' => true,
+                    'title' => 'View auth key',
                 ],
                 [
-                    'onclick' => sprintf(
-                        'openGenericModal(\'%s/authKeys/delete/[onclick_params_data_path]\');',
-                        $baseurl
+                    'url' => $baseurl . '/auth_keys/edit',
+                    'url_params_data_paths' => array(
+                        'AuthKey.id'
                     ),
-                    'onclick_params_data_path' => 'AuthKey.id',
+                    'icon' => 'edit',
+                    'title' => 'Edit auth key',
+                ],
+                [
+                    'class' => 'modal-open',
+                    'url' => "$baseurl/authKeys/delete",
+                    'url_params_data_paths' => ['AuthKey.id'],
                     'icon' => 'trash',
                     'title' => __('Delete auth key'),
                 ]

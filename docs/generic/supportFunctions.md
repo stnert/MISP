@@ -155,12 +155,13 @@ checkFlavour () {
       fi
       echo "${FLAVOUR} support is experimental at the moment"
     ;;
-    rhel|ol|sles)
+    rhel|ol|sles|fedora)
       if [ -z "$dist_version" ] && [ -r /etc/os-release ]; then
+        # FIXME: On fedora the trimming fails
         dist_version="$(. /etc/os-release && echo "$VERSION_ID")"
-	dist_version=${dist_version:0:1}  # Only interested about major version
+        dist_version=${dist_version:0:1}  # Only interested about major version
       fi
-      # Only tested for RHEL 7 so far 
+      # FIXME: Only tested for RHEL 7 so far 
       echo "${FLAVOUR} support is experimental at the moment"
     ;;
     *)
@@ -230,7 +231,7 @@ EOF
 
 checkInstaller () {
   # Workaround: shasum is not available on RHEL, only checking sha512
-  if [[ "${FLAVOUR}" == "rhel" ]] || [[ "${FLAVOUR}" == "centos" ]]; then
+  if [[ "${FLAVOUR}" == "rhel" ]] || [[ "${FLAVOUR}" == "centos" ]] || [[ "${FLAVOUR}" == "fedora" ]]; then
   INSTsum=$(sha512sum ${0} | cut -f1 -d\ )
   /usr/bin/wget --no-cache -q -O /tmp/INSTALL.sh.sha512 https://raw.githubusercontent.com/MISP/MISP/2.4/INSTALL/INSTALL.sh.sha512
         chsum=$(cat /tmp/INSTALL.sh.sha512)
@@ -617,6 +618,16 @@ kaliUpgrade () {
   sudo DEBIAN_FRONTEND=noninteractive apt autoremove -y
 }
 
+# Kali 2022.x has only php81
+installDepsKaliPhp74 () {
+    sudo apt -y install lsb-release apt-transport-https ca-certificates 
+    sudo wget -O /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
+    echo "deb https://packages.sury.org/php/ bullseye main" | sudo tee /etc/apt/sources.list.d/php.list
+    sudo apt update
+    wget http://ftp.us.debian.org/debian/pool/main/libf/libffi/libffi7_3.3-6_amd64.deb
+    sudo dpkg -i libffi7_3.3-6_amd64.deb
+}
+
 # Disables sleep
 disableSleep () {
   debug "Disabling sleep etc if run from a Laptop as the install might take some time…" > /dev/tty
@@ -672,6 +683,8 @@ installDepsPhp70 () {
   do
       sudo sed -i "s/^\($key\).*/\1 = $(eval echo \${$key})/" $PHP_INI
   done
+  sudo sed -i "s/^\(session.sid_length\).*/\1 = $(eval echo \${session0sid_length})/" $PHP_INI
+  sudo sed -i "s/^\(session.use_strict_mode\).*/\1 = $(eval echo \${session0use_strict_mode})/" $PHP_INI
 }
 # <snippet-end 0_installDepsPhp70.sh>
 
@@ -727,7 +740,7 @@ installDeps () {
   [[ -n $KALI ]] || [[ -n $UNATTENDED ]] && sudo DEBIAN_FRONTEND=noninteractive apt install -qy postfix || sudo apt install -qy postfix
 
   sudo apt install -qy \
-  curl gcc git gnupg-agent make openssl redis-server neovim unzip zip libyara-dev python3-yara python3-redis python3-zmq sqlite3 \
+  curl gcc git gnupg-agent make openssl redis-server neovim unzip zip libyara-dev python3-yara python3-redis python3-zmq sqlite3 python3-virtualenv \
   mariadb-client \
   mariadb-server \
   apache2 apache2-doc apache2-utils \
@@ -735,74 +748,6 @@ installDeps () {
   libxml2-dev libxslt1-dev zlib1g-dev python3-setuptools
 
   installRNG
-}
-
-# On Kali, the redis start-up script is broken. This tries to fix it.
-fixRedis () {
-  # As of 20190124 redis-server init.d scripts are broken and need to be replaced
-  sudo mv /etc/init.d/redis-server /etc/init.d/redis-server_`date +%Y%m%d`
-
-  echo '#! /bin/sh
-### BEGIN INIT INFO
-# Provides:		redis-server
-# Required-Start:	$syslog
-# Required-Stop:	$syslog
-# Should-Start:		$local_fs
-# Should-Stop:		$local_fs
-# Default-Start:	2 3 4 5
-# Default-Stop:		0 1 6
-# Short-Description:	redis-server - Persistent key-value db
-# Description:		redis-server - Persistent key-value db
-### END INIT INFO
-
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-DAEMON=/usr/bin/redis-server
-DAEMON_ARGS=/etc/redis/redis.conf
-NAME=redis-server
-DESC=redis-server
-PIDFILE=/var/run/redis.pid
-
-test -x $DAEMON || exit 0
-test -x $DAEMONBOOTSTRAP || exit 0
-
-set -e
-
-case "$1" in
-  start)
-	echo -n "Starting $DESC: "
-	touch $PIDFILE
-	chown redis:redis $PIDFILE
-	if start-stop-daemon --start --quiet --umask 007 --pidfile $PIDFILE --chuid redis:redis --exec $DAEMON -- $DAEMON_ARGS
-	then
-		echo "$NAME."
-	else
-		echo "failed"
-	fi
-	;;
-  stop)
-	echo -n "Stopping $DESC: "
-	if start-stop-daemon --stop --retry 10 --quiet --oknodo --pidfile $PIDFILE --exec $DAEMON
-	then
-		echo "$NAME."
-	else
-		echo "failed"
-	fi
-	rm -f $PIDFILE
-	;;
-
-  restart|force-reload)
-	${0} stop
-	${0} start
-	;;
-  *)
-	echo "Usage: /etc/init.d/$NAME {start|stop|restart|force-reload}" >&2
-	exit 1
-	;;
-esac
-
-exit 0' | sudo tee /etc/init.d/redis-server
-  sudo chmod 755 /etc/init.d/redis-server
-  sudo /etc/init.d/redis-server start
 }
 
 # generate MISP apache conf
@@ -859,9 +804,14 @@ gitPullAllRCLOCAL () {
 # Main composer function
 composer () {
   sudo mkdir -p /var/www/.composer ; sudo chown ${WWW_USER}:${WWW_USER} /var/www/.composer
-  ${SUDO_WWW} sh -c "cd ${PATH_TO_MISP}/app ; php composer.phar install"
+  ${SUDO_WWW} sh -c "cd ${PATH_TO_MISP}/app ; php composer.phar install --no-dev"
 }
 
+# Legacy composer function
+composer74 () {
+  sudo mkdir -p /var/www/.composer ; sudo chown ${WWW_USER}:${WWW_USER} /var/www/.composer
+  ${SUDO_WWW} sh -c "cd ${PATH_TO_MISP}/app ; php7.4 composer.phar install --no-dev"
+}
 
 # TODO: FIX somehow the alias of the function does not work
 # Composer on php 7.0 does not need any special treatment the provided phar works well
@@ -901,7 +851,7 @@ runTests () {
 key = \"${AUTH_KEY}\"" |sudo tee ${PATH_TO_MISP}/PyMISP/tests/keys.py
   sudo chown -R $WWW_USER:$WWW_USER $PATH_TO_MISP/PyMISP/
 
-  ${SUDO_WWW} sh -c "cd $PATH_TO_MISP/PyMISP && git submodule foreach git pull origin master"
+  ${SUDO_WWW} sh -c "cd $PATH_TO_MISP/PyMISP && git submodule foreach git pull origin main"
   ${SUDO_WWW} ${PATH_TO_MISP}/venv/bin/pip install -e $PATH_TO_MISP/PyMISP/.[fileobjects,neo,openioc,virustotal,pdfexport]
   ${SUDO_WWW} sh -c "cd $PATH_TO_MISP/PyMISP && ${PATH_TO_MISP}/venv/bin/python tests/testlive_comprehensive.py"
 }
@@ -976,6 +926,30 @@ theEnd () {
     sudo su - ${MISP_USER}
   fi
 }
-## End Function Section Nothing allowed in .md after this line ##
 # <snippet-end 0_support-functions.sh>
+# <snippet-begin 0_installDepsPhp72.sh>
+# Install Php 7.2 dependencies
+installDepsPhp72 () {
+  debug "Installing PHP 7.2 dependencies"
+  PHP_ETC_BASE=/etc/php/7.2
+  PHP_INI=${PHP_ETC_BASE}/apache2/php.ini
+  checkAptLock
+  sudo apt install -qy \
+  libapache2-mod-php \
+  php php-cli \
+  php-dev \
+  php-json php-xml php-mysql php7.2-opcache php-readline php-mbstring php-zip \
+  php-redis php-gnupg \
+  php-intl php-bcmath \
+  php-gd
+
+  for key in upload_max_filesize post_max_size max_execution_time max_input_time memory_limit
+  do
+      sudo sed -i "s/^\($key\).*/\1 = $(eval echo \${$key})/" $PHP_INI
+  done
+  sudo sed -i "s/^\(session.sid_length\).*/\1 = $(eval echo \${session0sid_length})/" $PHP_INI
+  sudo sed -i "s/^\(session.use_strict_mode\).*/\1 = $(eval echo \${session0use_strict_mode})/" $PHP_INI
+}
+## End Function Section Nothing allowed in .md after this line ##
+# <snippet-end 0_installDepsPhp72.sh>
 ```

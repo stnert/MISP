@@ -42,6 +42,9 @@ foreach ($servers as $server):
     $rules['pull'] = json_decode($server['Server']['pull_rules'], true);
     $syncOptions = array('pull', 'push');
     $fieldOptions = array('tags', 'orgs');
+    if (!empty(Configure::read('MISP.enable_synchronisation_filtering_on_type'))) {
+        $fieldOptions = array_merge($fieldOptions, ['type_attributes', 'type_objects']);
+    }
     $typeOptions = array('OR' => array('colour' => 'green', 'text' => 'allowed'), 'NOT' => array('colour' => 'red', 'text' => 'blocked'));
     $ruleDescription = array('pull' => '', 'push' => '');
     foreach ($syncOptions as $syncOption) {
@@ -51,7 +54,9 @@ foreach ($servers as $server):
                     $ruleDescription[$syncOption] .= '<span class=\'bold\'>' . ucfirst($fieldOption) . ' ' . $typeData['text'] . '</span>: <span class=\'' . $typeData['colour'] . '\'>';
                     foreach ($rules[$syncOption][$fieldOption][$typeOption] as $k => $temp) {
                         if ($k != 0) $ruleDescription[$syncOption] .= ', ';
-                        if ($syncOption === 'push') $temp = $collection[$fieldOption][$temp];
+                        if ($syncOption === 'push') {
+                            $temp = !empty($collection[$fieldOption][$temp]) ? $collection[$fieldOption][$temp] : $temp;
+                        }
                         $ruleDescription[$syncOption] .= h($temp);
                     }
                     $ruleDescription[$syncOption] .= '</span><br>';

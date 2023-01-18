@@ -4,15 +4,24 @@ App::uses('AuthComponent', 'Controller/Component');
 App::uses('RandomTool', 'Tools');
 App::uses('GpgTool', 'Tools');
 App::uses('SendEmail', 'Tools');
+App::uses('SendEmailTemplate', 'Tools');
+App::uses('BlowfishConstantPasswordHasher', 'Controller/Component/Auth');
 
 /**
  * @property Log $Log
+ * @property Organisation $Organisation
+ * @property Role $Role
+ * @property UserSetting $UserSetting
+ * @property Event $Event
+ * @property AuthKey $AuthKey
+ * @property Server $Server
  */
 class User extends AppModel
 {
-    public $displayField = 'email';
+    private const PERIODIC_USER_SETTING_KEY = 'periodic_notification_filters';
+    public const PERIODIC_NOTIFICATIONS = ['notification_daily', 'notification_weekly', 'notification_monthly'];
 
-    public $orgField = array('Organisation', 'name');
+    public $displayField = 'email';
 
     public $validate = array(
         'role_id' => array(
@@ -51,7 +60,6 @@ class User extends AppModel
                 //'on' => 'create', // Limit validation to 'create' or 'update' operations
             ),
         ),
-
         'org_id' => array(
             'valueNotEmpty' => array(
                 'rule' => array('valueNotEmpty'),
@@ -62,13 +70,10 @@ class User extends AppModel
             ),
         ),
         'email' => array(
-            'email' => array(
-                'rule' => array('email'),
+            'emailValidation' => array(
+                'rule' => array('validateEmail'),
                 'message' => 'Please enter a valid email address.',
-                //'allowEmpty' => false,
                 'required' => true,
-                //'last' => false, // Stop validation after this rule
-                //'on' => 'create', // Limit validation to 'create' or 'update' operations
             ),
             'unique' => array(
                 'rule' => 'isUnique',
@@ -213,6 +218,7 @@ class User extends AppModel
     );
 
     public $actsAs = array(
+        'AuditLog',
         'SysLogLogable.SysLogLogable' => array(
             'userModel' => 'User',
             'userKey' => 'user_id',
@@ -223,63 +229,96 @@ class User extends AppModel
         'Containable'
     );
 
-    public function __construct($id = false, $table = null, $ds = null) {
-        parent::__construct();
-        $this->AdminSetting = ClassRegistry::init('AdminSetting');
-        $db_version = $this->AdminSetting->find('first', [
-            'recursive' => -1,
-            'conditions' => ['setting' => 'db_version'],
-            'fields' => ['value']
-        ]);
-        if ($db_version['AdminSetting']['value'] >= 62) {
+    /** @var CryptGpgExtended|null|false */
+    private $gpg;
+
+    public function __construct($id = false, $table = null, $ds = null)
+    {
+        parent::__construct($id, $table, $ds);
+
+        // bind AuthKey just when authkey table already exists. This is important for updating from old versions
+        if (in_array('auth_keys', $this->getDataSource()->listSources(), true)) {
             $this->bindModel([
                 'hasMany' => ['AuthKey']
             ], false);
         }
     }
 
-    /** @var CryptGpgExtended|null|false */
-    private $gpg;
-
     public function beforeValidate($options = array())
     {
-        if (!isset($this->data['User']['id'])) {
-            if ((isset($this->data['User']['enable_password']) && (!$this->data['User']['enable_password'])) || (empty($this->data['User']['password']) && empty($this->data['User']['confirm_password']))) {
-                $this->data['User']['password'] = $this->generateRandomPassword();
-                $this->data['User']['confirm_password'] = $this->data['User']['password'];
+        $user = &$this->data['User'];
+        if (!isset($user['id'])) {
+            if ((isset($user['enable_password']) && !$user['enable_password']) || (empty($user['password']) && empty($user['confirm_password']))) {
+                $user['password'] = $this->generateRandomPassword();
+                $user['confirm_password'] = $user['password'];
             }
         }
-        if (!isset($this->data['User']['certif_public']) || empty($this->data['User']['certif_public'])) {
-            $this->data['User']['certif_public'] = '';
+        if (empty($user['certif_public'])) {
+            $user['certif_public'] = '';
         }
-        if (!isset($this->data['User']['authkey']) || empty($this->data['User']['authkey'])) {
-            $this->data['User']['authkey'] = $this->generateAuthKey();
+        if (empty($user['authkey'])) {
+            $user['authkey'] = $this->generateAuthKey();
         }
-        if (!isset($this->data['User']['nids_sid']) || empty($this->data['User']['nids_sid'])) {
-            $this->data['User']['nids_sid'] = mt_rand(1000000, 9999999);
-        }
-        if (isset($this->data['User']['newsread']) && $this->data['User']['newsread'] === null) {
-            $this->data['User']['newsread'] = 0;
+        if (empty($user['nids_sid'])) {
+            $user['nids_sid'] = mt_rand(1000000, 9999999);
         }
         return true;
     }
 
-    public function beforeSave($options = array())
+    public function beforeSave($options = [])
     {
-        $this->data[$this->alias]['date_modified'] = time();
-        if (isset($this->data[$this->alias]['password'])) {
-            $passwordHasher = new BlowfishPasswordHasher();
-            $this->data[$this->alias]['password'] = $passwordHasher->hash($this->data[$this->alias]['password']);
+        $user = &$this->data[$this->alias];
+        $user['date_modified'] = time();
+
+        if (isset($user['password'])) {
+            $passwordHasher = new BlowfishConstantPasswordHasher();
+            $user['password'] = $passwordHasher->hash($user['password']);
+        }
+
+        if (
+            empty($user['action']) ||
+            (
+                $user['action'] !== 'logout' &&
+                $user['action'] !== 'login'
+            )
+        ) {
+            $action = empty($this->id) ? 'add' : 'edit';
+            $user_id = $action === 'add' ? 0 : $user['id'];
+            $trigger_id = 'user-before-save';
+            $workflowErrors = [];
+            $logging = [
+                'model' => 'User',
+                'action' => $action,
+                'id' => $user_id,
+                'message' => __('The workflow `%s` prevented the saving of user %s', $trigger_id, $user_id),
+            ];
+            return $this->executeTrigger($trigger_id, $user, $workflowErrors, $logging);
         }
         return true;
     }
 
     public function afterSave($created, $options = array())
     {
-        $pubToZmq = Configure::read('Plugin.ZeroMQ_enable') && Configure::read('Plugin.ZeroMQ_user_notifications_enable');
-        $kafkaTopic = Configure::read('Plugin.Kafka_user_notifications_topic');
-        $pubToKafka = Configure::read('Plugin.Kafka_enable') && Configure::read('Plugin.Kafka_user_notifications_enable') && !empty($kafkaTopic);
-        if ($pubToZmq || $pubToKafka) {
+        $pubToZmq = $this->pubToZmq('user');
+        $kafkaTopic = $this->kafkaTopic('user');
+        $action = empty($created) ? 'edit' : 'add';
+        $user = $this->data;
+        if (
+            empty($user['User']['action']) ||
+            (
+                $user['User']['action'] != 'logout' &&
+                $user['User']['action'] != 'login'
+            )
+        ) {
+            $workflowErrors = [];
+            $logging = [
+                'model' => 'User',
+                'action' => $action,
+                'id' => $user['User']['id'],
+            ];
+            $this->executeTrigger('user-after-save', $user['User'], $workflowErrors, $logging);
+        }
+        if ($pubToZmq || $kafkaTopic) {
             if (!empty($this->data)) {
                 $user = $this->data;
                 if (!isset($user['User'])) {
@@ -309,7 +348,7 @@ class User extends AppModel
                     $pubSubTool = $this->getPubSubTool();
                     $pubSubTool->modified($user, 'user', $action);
                 }
-                if ($pubToKafka) {
+                if ($kafkaTopic) {
                     $kafkaPubTool = $this->getKafkaPubTool();
                     $kafkaPubTool->publishJson($kafkaTopic, $user, $action);
                 }
@@ -382,6 +421,16 @@ class User extends AppModel
         return true;
     }
 
+    public function validateEmail($check)
+    {
+        $localPartReg = '[\p{L}0-9!#$%&\'*+\/=?^_`{|}~-]+(?:\.[\p{L}0-9!#$%&\'*+\/=?^_`{|}~-]+)*@';
+        $domainReg = '[a-z0-9_\-\.]+';
+        $fullReg = sprintf('/^%s%s$/ui', $localPartReg, $domainReg);
+        $check = array_values($check);
+        $check = $check[0];
+        return preg_match($fullReg, $check, $matches) ? true : false;
+    }
+
     /*
      default password:
      6 characters minimum
@@ -404,21 +453,14 @@ class User extends AppModel
 
     public function identicalFieldValues($field = array(), $compareField = null)
     {
-        foreach ($field as $key => $value) {
-            $v1 = $value;
-            $v2 = $this->data[$this->name][$compareField];
-            if ($v1 !== $v2) {
-                return false;
-            } else {
-                continue;
-            }
-        }
-        return true;
+        $v1 = array_values($field)[0];
+        $v2 = $this->data[$this->name][$compareField];
+        return $v1 === $v2;
     }
 
     public function generateAuthKey()
     {
-        return (new RandomTool())->random_str(true, 40);
+        return RandomTool::random_str(true, 40);
     }
 
     /**
@@ -426,18 +468,18 @@ class User extends AppModel
      *
      * @param int $passwordLength
      * @return string
+     * @throws Exception
      */
     public function generateRandomPassword($passwordLength = 40)
     {
         // makes sure, the password policy isn't undermined by setting a manual passwordLength
-        $policyPasswordLength = Configure::read('Security.password_policy_length') ? Configure::read('Security.password_policy_length') : false;
+        $policyPasswordLength = Configure::read('Security.password_policy_length') ?: false;
         if (is_int($policyPasswordLength) && $policyPasswordLength > $passwordLength) {
             $passwordLength = $policyPasswordLength;
         }
         $characters = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-+=!@#$%^&*()<>/?';
-        return (new RandomTool())->random_str(true, $passwordLength, $characters);
+        return RandomTool::random_str(true, $passwordLength, $characters);
     }
-
 
     public function checkAndCorrectPgps()
     {
@@ -450,23 +492,6 @@ class User extends AppModel
             }
         }
         return $fails;
-    }
-
-    public function getOrgs()
-    {
-        $orgs = $this->Organisation->find('list', array(
-            'recursive' => -1,
-            'fields' => array('name'),
-        ));
-        return $orgs;
-    }
-
-    public function getOrgMemberCount($org)
-    {
-        return $this->find('count', array(
-                'conditions' => array(
-                        'org =' => $org,
-                )));
     }
 
     /**
@@ -515,12 +540,12 @@ class User extends AppModel
                 $sortedKeys['valid']++;
             }
             if (!$sortedKeys['valid']) {
-                $result[2] = 'The user\'s GnuPG key does not include a valid subkey that could be used for encryption.';
+                $result[2] = 'The user\'s PGP key does not include a valid subkey that could be used for encryption.';
                 if ($sortedKeys['expired']) {
-                    $result[2] .= ' Found ' . $sortedKeys['expired'] . ' subkey(s) that have expired.';
+                    $result[2] .= ' ' . __n('Found %s subkey that have expired.', 'Found %s subkeys that have expired.', $sortedKeys['expired'], $sortedKeys['expired']);
                 }
                 if ($sortedKeys['noEncrypt']) {
-                    $result[2] .= ' Found ' . $sortedKeys['noEncrypt'] . ' subkey(s) that are sign only.';
+                    $result[2] .= ' ' . __n('Found %s subkey that is sign only.', 'Found %s subkeys that are sign only.', $sortedKeys['noEncrypt'], $sortedKeys['noEncrypt']);
                 }
             } else {
                 $result[0] = true;
@@ -540,6 +565,7 @@ class User extends AppModel
         }
         $users = $this->find('all', array(
             'conditions' => $conditions,
+            'fields' => ['id', 'email', 'gpgkey'],
             'recursive' => -1,
         ));
         if (empty($users)) {
@@ -550,7 +576,7 @@ class User extends AppModel
             return [];
         }
         $results = [];
-        foreach ($users as $k => $user) {
+        foreach ($users as $user) {
             $results[$user['User']['id']] = $this->verifySingleGPG($user);
         }
         return $results;
@@ -638,17 +664,26 @@ class User extends AppModel
         );
     }
 
-    // get the current user and rearrange it to be in the same format as in the auth component
-    public function getAuthUser($id)
+    /**
+     * Get the current user and rearrange it to be in the same format as in the auth component.
+     * @param int $id
+     * @param bool $full
+     * @return array|null
+     */
+    public function getAuthUser($id, $full = false)
     {
         if (empty($id)) {
             throw new InvalidArgumentException('Invalid user ID.');
         }
         $conditions = ['User.id' => $id];
-        return $this->getAuthUserByConditions($conditions);
+        return $this->getAuthUserByConditions($conditions, $full);
     }
 
-    // get the current user and rearrange it to be in the same format as in the auth component
+    /**
+     * Get the current user and rearrange it to be in the same format as in the auth component.
+     * @param string $authkey
+     * @return array|null
+     */
     public function getAuthUserByAuthkey($authkey)
     {
         if (empty($authkey)) {
@@ -658,6 +693,10 @@ class User extends AppModel
         return $this->getAuthUserByConditions($conditions);
     }
 
+    /**
+     * @param string $auth_key
+     * @return array|null
+     */
     public function getAuthUserByExternalAuth($auth_key)
     {
         if (empty($auth_key)) {
@@ -671,13 +710,16 @@ class User extends AppModel
     }
 
     /**
+     * Get user model with Role, Organisation and Server, but without PGP and S/MIME keys
      * @param array $conditions
+     * @param bool $full When true, fetch all user fields.
      * @return array|null
      */
-    private function getAuthUserByConditions(array $conditions)
+    private function getAuthUserByConditions(array $conditions, $full = false)
     {
         $user = $this->find('first', [
             'conditions' => $conditions,
+            'fields' => $full ? [] : $this->describeAuthFields(),
             'recursive' => -1,
             'contain' => [
                 'Organisation',
@@ -706,13 +748,25 @@ class User extends AppModel
 
         $user['User']['Role'] = $user['Role'];
         $user['User']['Organisation'] = $user['Organisation'];
-        $user['User']['Server'] = $user['Server'];
+        if (isset($user['Server'])) {
+            $user['User']['Server'] = $user['Server'];
+        }
+        if (isset($user['UserSetting'])) {
+            $user['User']['UserSetting'] = $user['UserSetting'];
+        }
         return $user['User'];
     }
 
-    // Fetch all users that have access to an event / discussion for e-mailing (or maybe something else in the future.
-    // parameters are an array of org IDs that are owners (for an event this would be orgc and org)
-    public function getUsersWithAccess($owners = array(), $distribution, $sharing_group_id = 0, $userConditions = array())
+    /**
+     * Fetch all users that have access to an event / discussion for e-mailing (or maybe something else in the future.
+     * parameters are an array of org IDs that are owners (for an event this would be orgc and org)
+     * @param array $owners Event owners
+     * @param int $distribution
+     * @param int $sharing_group_id
+     * @param array $userConditions
+     * @return array|int
+     */
+    public function getUsersWithAccess(array $owners, $distribution, $sharing_group_id = 0, array $userConditions = [])
     {
         $conditions = array();
         $validOrgs = array();
@@ -740,42 +794,39 @@ class User extends AppModel
             $conditions['AND']['OR'][] = array('org_id' => $validOrgs);
 
             // Add the site-admins to the list
-            $roles = $this->Role->find('all', array(
-                    'conditions' => array('perm_site_admin' => 1),
-                    'fields' => array('id')
-            ));
-            $roleIDs = array();
-            foreach ($roles as $role) {
-                $roleIDs[] = $role['Role']['id'];
-            }
-            $conditions['AND']['OR'][] = array('role_id' => $roleIDs);
+            $siteAdminRoleIds = $this->Role->find('column', [
+                'conditions' => array('perm_site_admin' => 1),
+                'fields' => array('id'),
+            ]);
+            $conditions['AND']['OR'][] = array('role_id' => $siteAdminRoleIds);
         }
         $conditions['AND'][] = $userConditions;
         $users = $this->find('all', array(
             'conditions' => $conditions,
             'recursive' => -1,
             'fields' => array('id', 'email', 'gpgkey', 'certif_public', 'org_id', 'disabled'),
-            'contain' => ['Role' => ['fields' => ['perm_site_admin', 'perm_audit']], 'Organisation' => ['fields' => ['id']]],
+            'contain' => [
+                'Role' => ['fields' => ['perm_site_admin', 'perm_audit']],
+                'Organisation' => ['fields' => ['id', 'name']]
+            ],
         ));
         foreach ($users as $k => $user) {
-            $user = $user['User'];
-            unset($users[$k]['User']);
-            $users[$k] = array_merge($user, $users[$k]);
+            $users[$k] = $this->rearrangeToAuthForm($user);
         }
         return $users;
     }
 
     /**
-     * @param $user - deprecated
      * @param array $params
+     * @return array|bool
      * @throws Crypt_GPG_Exception
      * @throws SendEmailException
      */
-    public function sendEmailExternal($user, array $params)
+    public function sendEmailExternal(array $params)
     {
         $gpg = $this->initializeGpg();
         $sendEmail = new SendEmail($gpg);
-        $sendEmail->sendExternal($params);
+        return $sendEmail->sendExternal($params);
     }
 
     /**
@@ -784,9 +835,9 @@ class User extends AppModel
      * the remaining two parameters are the e-mail subject and a secondary user object which will be used as the replyto address if set. If it is set and an encryption key for the replyTo user exists, then his/her public key will also be attached
      *
      * @param array $user
-     * @param string $body
+     * @param SendEmailTemplate|string $body
      * @param string|false $bodyNoEnc
-     * @param string $subject
+     * @param string|null $subject
      * @param array|false $replyToUser
      * @return bool
      * @throws Crypt_GPG_BadPassphraseException
@@ -794,22 +845,22 @@ class User extends AppModel
      */
     public function sendEmail(array $user, $body, $bodyNoEnc = false, $subject, $replyToUser = false)
     {
-        if ($user['User']['disabled']) {
+        if ($user['User']['disabled'] || !$this->checkIfUserIsValid($user['User'])) {
             return true;
         }
 
-        $this->Log = ClassRegistry::init('Log');
+        $log = $this->loadLog();
         $replyToLog = $replyToUser ? ' from ' . $replyToUser['User']['email'] : '';
 
         $gpg = $this->initializeGpg();
         $sendEmail = new SendEmail($gpg);
         try {
-            $encrypted = $sendEmail->sendToUser($user, $subject, $body, $bodyNoEnc ?: null, $replyToUser ?: array());
+            $result = $sendEmail->sendToUser($user, $subject, $body, $bodyNoEnc,$replyToUser ?: []);
 
         } catch (SendEmailException $e) {
             $this->logException("Exception during sending e-mail", $e);
-            $this->Log->create();
-            $this->Log->save(array(
+            $log->create();
+            $log->save(array(
                 'org' => 'SYSTEM',
                 'model' => 'User',
                 'model_id' => $user['User']['id'],
@@ -821,12 +872,12 @@ class User extends AppModel
             return false;
         }
 
-        $logTitle = $encrypted ? 'Encrypted email' : 'Email';
+        $logTitle = $result['encrypted'] ? 'Encrypted email' : 'Email';
         // Intentional two spaces to pass test :)
-        $logTitle .= $replyToLog  . '  to ' . $user['User']['email'] . ' sent, titled "' . $subject . '".';
+        $logTitle .= $replyToLog  . '  to ' . $user['User']['email'] . ' sent, titled "' . $result['subject'] . '".';
 
-        $this->Log->create();
-        $this->Log->save(array(
+        $log->create();
+        $log->save(array(
             'org' => 'SYSTEM',
             'model' => 'User',
             'model_id' => $user['User']['id'],
@@ -836,16 +887,6 @@ class User extends AppModel
             'change' => null,
         ));
         return true;
-    }
-
-    public function adminMessageResolve($message)
-    {
-        $resolveVars = array('$contact' => 'MISP.contact', '$org' => 'MISP.org', '$misp' => 'MISP.baseurl');
-        foreach ($resolveVars as $k => $v) {
-            $v = Configure::read($v);
-            $message = str_replace($k, $v, $message);
-        }
-        return $message;
     }
 
     /**
@@ -880,6 +921,10 @@ class User extends AppModel
         // Do not include keys, because they are big and usually not necessary
         unset($fields['gpgkey']);
         unset($fields['certif_public']);
+        // Do not fetch password from db, it is automatically fetched by BaseAuthenticate::_findUser
+        unset($fields['password']);
+        // Do not fetch authkey from db, it is sensitive and not need
+        unset($fields['authkey']);
         $fields = array_keys($fields);
 
         foreach ($this->belongsTo as $relatedModel => $foo) {
@@ -922,23 +967,15 @@ class User extends AppModel
     public function initiatePasswordReset($user, $firstTime = false, $simpleReturn = false, $fixedPassword = false)
     {
         $org = Configure::read('MISP.org');
-        $options = array('newUserText', 'passwordResetText');
         $subjects = array('[' . $org . ' MISP] New user registration', '[' . $org .  ' MISP] Password reset');
-        $textToFetch = $options[($firstTime ? 0 : 1)];
         $subject = $subjects[($firstTime ? 0 : 1)];
         $this->Server = ClassRegistry::init('Server');
-        $body = Configure::read('MISP.' . $textToFetch);
-        if (!$body) {
-            $body = $this->Server->serverSettings['MISP'][$textToFetch]['value'];
-        }
-        $body = $this->adminMessageResolve($body);
         if ($fixedPassword) {
             $password = $fixedPassword;
         } else {
             $password = $this->generateRandomPassword();
         }
-        $body = str_replace('$password', $password, $body);
-        $body = str_replace('$username', $user['User']['email'], $body);
+        $body = $this->preparePasswordResetEmail($user, $password, $firstTime, $subject);
         $result = $this->sendEmail($user, $body, false, $subject);
         if ($result) {
             $this->id = $user['User']['id'];
@@ -957,6 +994,27 @@ class User extends AppModel
         }
     }
 
+    private function preparePasswordResetEmail($user, $password, $firstTime, $subject)
+    {
+        $textToFetch = $firstTime ? 'newUserText': 'passwordResetText';
+        $this->Server = ClassRegistry::init('Server');
+        $bodyTemplate = Configure::read('MISP.' . $textToFetch);
+        if (!$bodyTemplate) {
+            $bodyTemplate = $this->Server->serverSettings['MISP'][$textToFetch]['value'];
+        }
+        $template = new SendEmailTemplate('password_reset');
+        $template->set('body', $bodyTemplate);
+        $template->set('user', $user);
+        $template->set('password', $password);
+        $template->subject($subject);
+        return $template;
+    }
+
+    /**
+     * @param int $org_id
+     * @param int|false $excludeUserId
+     * @return array
+     */
     public function getOrgAdminsForOrg($org_id, $excludeUserId = false)
     {
         $adminRoles = $this->Role->find('column', array(
@@ -994,7 +1052,7 @@ class User extends AppModel
             App::uses('SimplePasswordHasher', 'Controller/Component/Auth');
             $passwordHasher = new SimplePasswordHasher();
         } else {
-            $passwordHasher = new BlowfishPasswordHasher();
+            $passwordHasher = new BlowfishConstantPasswordHasher();
         }
         $hashed = $passwordHasher->check($password, $currentUser['User']['password']);
         return $hashed;
@@ -1017,34 +1075,46 @@ class User extends AppModel
         ));
         $this->validator()->remove('password'); // password is too simple, remove validation
         $this->save($admin);
+        if (!empty(Configure::read("Security.advanced_authkeys"))) {
+            $this->AuthKey = ClassRegistry::init('AuthKey');
+            $newKey = [
+                'authkey' => $authKey,
+                'user_id' => 1,
+                'comment' => 'Initial auto-generated key',
+                'allowed_ips' => null,
+            ];
+            $this->AuthKey->create();
+            $this->AuthKey->save($newKey);
+        }
         return $authKey;
     }
 
     public function resetAllSyncAuthKeysRouter($user, $jobId = false)
     {
         if (Configure::read('MISP.background_jobs')) {
+
+            /** @var Job $job */
             $job = ClassRegistry::init('Job');
-            $job->create();
-            $eventModel = ClassRegistry::init('Event');
-            $data = array(
-                    'worker' => $eventModel->__getPrioWorkerIfPossible(),
-                    'job_type' => __('reset_all_sync_api_keys'),
-                    'job_input' => __('Reseting all API keys'),
-                    'status' => 0,
-                    'retries' => 0,
-                    'org_id' => $user['org_id'],
-                    'org' => $user['Organisation']['name'],
-                    'message' => 'Issuing new API keys to all sync users.',
+            $jobId = $job->createJob(
+                $user,
+                Job::WORKER_PRIO,
+                'reset_all_sync_api_keys',
+                __('Reseting all API keys'),
+                'Issuing new API keys to all sync users.'
             );
-            $job->save($data);
-            $jobId = $job->id;
-            $process_id = CakeResque::enqueue(
-                    'prio',
-                    'AdminShell',
-                    array('resetSyncAuthkeys', $user['id'], $jobId),
-                    true
+
+            $this->getBackgroundJobsTool()->enqueue(
+                BackgroundJobsTool::PRIO_QUEUE,
+                BackgroundJobsTool::CMD_ADMIN,
+                [
+                    'resetSyncAuthkeys',
+                    $user['id'],
+                    $jobId
+                ],
+                true,
+                $jobId
             );
-            $job->saveField('process_id', $process_id);
+
             return true;
         } else {
             return $this->resetAllSyncAuthKeys($user);
@@ -1104,7 +1174,7 @@ class User extends AppModel
         return $results;
     }
 
-    public function resetauthkey($user, $id, $alert = false)
+    public function resetauthkey($user, $id, $alert = false, $keyId = null)
     {
         $this->id = $id;
         if (!$id || !$this->exists($id)) {
@@ -1121,8 +1191,7 @@ class User extends AppModel
             $this->extralog(
                     $user,
                     'reset_auth_key',
-                    sprintf(
-                        __('Authentication key for user %s (%s) updated.'),
+                    __('Authentication key for user %s (%s) updated.',
                         $updatedUser['User']['id'],
                         $updatedUser['User']['email']
                     ),
@@ -1131,7 +1200,7 @@ class User extends AppModel
             );
         } else {
             $this->AuthKey = ClassRegistry::init('AuthKey');
-            $newkey = $this->AuthKey->resetauthkey($id);
+            $newkey = $this->AuthKey->resetAuthKey($id, $keyId);
         }
         if ($alert) {
             $baseurl = Configure::read('MISP.external_baseurl');
@@ -1178,13 +1247,13 @@ class User extends AppModel
         }
 
         // query
-        $this->Log = ClassRegistry::init('Log');
-        $result = $this->Log->createLogEntry($user, $action, $model, $modelId, $description, $fieldsResult);
-
+        $result = $this->loadLog()->createLogEntry($user, $action, $model, $modelId, $description, $fieldsResult);
         // write to syslogd as well
-        App::import('Lib', 'SysLog.SysLog');
-        $syslog = new SysLog();
-        $syslog->write('notice', "$description -- $action" . (empty($fieldResult) ? '' : ' -- ' . $result['Log']['change']));
+        if ($result) {
+            App::import('Lib', 'SysLog.SysLog');
+            $syslog = new SysLog();
+            $syslog->write(LOG_NOTICE, "$description -- $action" . (empty($fieldsResult) ? '' : ' -- ' . $result['Log']['change']));
+        }
     }
 
     /**
@@ -1261,20 +1330,21 @@ class User extends AppModel
         return $data;
     }
 
-    public function registerUser($added_by, $registration, $org_id, $role_id) {
+    public function registerUser($added_by, $registration, $org_id, $role_id)
+    {
         $user = array(
-                'email' => $registration['data']['email'],
-                'gpgkey' => empty($registration['data']['pgp']) ? '' : $registration['data']['pgp'],
-                'disabled' => 0,
-                'newsread' => 0,
-                'change_pw' => 1,
-                'authkey' => $this->generateAuthKey(),
-                'termsaccepted' => 0,
-                'org_id' => $org_id,
-                'role_id' => $role_id,
-                'invited_by' => $added_by['id'],
-                'contactalert' => 1,
-                'autoalert' => Configure::check('MISP.default_publish_alert') ? Configure::read('MISP.default_publish_alert') : 1
+            'email' => $registration['data']['email'],
+            'gpgkey' => empty($registration['data']['pgp']) ? '' : $registration['data']['pgp'],
+            'disabled' => 0,
+            'newsread' => 0,
+            'change_pw' => 1,
+            'authkey' => $this->generateAuthKey(),
+            'termsaccepted' => 0,
+            'org_id' => $org_id,
+            'role_id' => $role_id,
+            'invited_by' => $added_by['id'],
+            'contactalert' => 1,
+            'autoalert' => $this->defaultPublishAlert(),
         );
         $this->create();
         $this->Log = ClassRegistry::init('Log');
@@ -1343,6 +1413,22 @@ class User extends AppModel
     }
 
     /**
+     * Updates `last_api_access` time in database.
+     *
+     * @param array $user
+     * @return array|bool
+     * @throws Exception
+     */
+    public function updateAPIAccessTime(array $user)
+    {
+        if (!isset($user['id'])) {
+            throw new InvalidArgumentException("Invalid user object provided.");
+        }
+        $user['last_api_access'] = time();
+        return $this->save($user, true, array('id', 'last_api_access'));
+    }
+
+    /**
      * Update field in user model and also set `date_modified`
      *
      * @param array $user
@@ -1362,6 +1448,34 @@ class User extends AppModel
         if (!$success) {
             throw new RuntimeException("Could not save setting $name for user {$user['id']}.");
         }
+    }
+
+    /**
+     * Check if user still valid at identity provider.
+     * @param array $user
+     * @return bool
+     * @throws Exception
+     */
+    public function checkIfUserIsValid(array $user)
+    {
+        static $oidc;
+
+        if ($oidc === null) {
+            $auth = Configure::read('Security.auth');
+            if (!$auth) {
+                return true;
+            }
+            if (!is_array($auth)) {
+                throw new Exception("`Security.auth` config value must be array.");
+            }
+            if (!in_array('OidcAuth.Oidc', $auth, true)) {
+                return true; // this method currently makes sense just for OIDC auth provider
+            }
+            App::uses('Oidc', 'OidcAuth.Lib');
+            $oidc = new Oidc($this);
+        }
+
+        return $oidc->isUserValid($user);
     }
 
     /**
@@ -1387,5 +1501,505 @@ class User extends AppModel
             $this->gpg = false;
             return null;
         }
+    }
+
+    public function updateToAdvancedAuthKeys()
+    {
+        $users = $this->find('all', [
+            'recursive' => -1,
+            'contain' => ['AuthKey'],
+            'fields' => ['id', 'authkey']
+        ]);
+        $updated = 0;
+        foreach ($users as $user) {
+            if (!empty($user['AuthKey'])) {
+                $currentKeyStart = substr($user['User']['authkey'], 0, 4);
+                $currentKeyEnd = substr($user['User']['authkey'], -4);
+                foreach ($user['AuthKey'] as $authkey) {
+                    if ($authkey['authkey_start'] === $currentKeyStart && $authkey['authkey_end'] === $currentKeyEnd) {
+                        continue 2;
+                    }
+                }
+            }
+            $this->AuthKey->create();
+            $this->AuthKey->save([
+                'authkey' => $user['User']['authkey'],
+                'expiration' => 0,
+                'user_id' => $user['User']['id']
+            ]);
+            $updated += 1;
+        }
+        return $updated;
+    }
+
+    public function checkNotificationBanStatus(array $user)
+    {
+        $banStatus = [
+            'error' => false,
+            'active' => false,
+            'message' => __('User is not banned to sent email notification')
+        ];
+        if (!empty($user['Role']['perm_site_admin'])) {
+            return $banStatus;
+        }
+        if (Configure::read('MISP.user_email_notification_ban')) {
+            $banThresholdAmount = intval(Configure::read('MISP.user_email_notification_ban_amount_threshold'));
+            $banThresholdMinutes = intval(Configure::read('MISP.user_email_notification_ban_time_threshold'));
+            $banThresholdSeconds = 60 * $banThresholdMinutes;
+            $redis = $this->setupRedis();
+            if ($redis === false) {
+                $banStatus['error'] = true;
+                $banStatus['active'] = true;
+                $banStatus['message'] =  __('Reason: Could not reach redis to check user email notification ban status.');
+                return $banStatus;
+            }
+
+            $redisKeyAmountThreshold = "misp:user_email_notification_ban_amount:{$user['id']}";
+            $notificationAmount = $redis->get($redisKeyAmountThreshold);
+            if (!empty($notificationAmount)) {
+                $remainingAttempt = $banThresholdAmount - intval($notificationAmount);
+                if ($remainingAttempt <= 0) {
+                    $ttl = $redis->ttl($redisKeyAmountThreshold);
+                    $remainingMinutes = intval($ttl) / 60;
+                    $banStatus['active'] = true;
+                    $banStatus['message'] = __('Reason: User is banned from sending out emails (%s notification tried to be sent). Ban will be lifted in %smin %ssec.', $notificationAmount, floor($remainingMinutes), intval($ttl) % 60);
+                }
+            }
+            $pipe = $redis->multi(Redis::PIPELINE)
+                ->incr($redisKeyAmountThreshold);
+            if (!$banStatus['active']) { // no need to refresh the ttl if the ban is active
+                $pipe->expire($redisKeyAmountThreshold, $banThresholdSeconds);
+            }
+            $pipe->exec();
+            return $banStatus;
+        }
+        $banStatus['message'] = __('User email notification ban setting is not enabled');
+        return $banStatus;
+    }
+
+    /**
+     * @return bool
+     */
+    public function defaultPublishAlert()
+    {
+        return (bool)Configure::read('MISP.default_publish_alert');
+    }
+
+    /**
+     * @param array $user
+     * @return bool
+     */
+    public function hasNotifications(array $user)
+    {
+        $hasProposal = $this->Event->ShadowAttribute->hasAny([
+            'ShadowAttribute.event_org_id' => $user['org_id'],
+            'ShadowAttribute.deleted' => 0,
+        ]);
+        if ($hasProposal) {
+            return true;
+        }
+
+        if (Configure::read('MISP.delegation') && $this->_getDelegationCount($user)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * @param array $user
+     * @return array
+     */
+    public function populateNotifications(array $user)
+    {
+        $notifications = array();
+        list($notifications['proposalCount'], $notifications['proposalEventCount']) = $this->_getProposalCount($user);
+        $notifications['total'] = $notifications['proposalCount'];
+        if (Configure::read('MISP.delegation')) {
+            $notifications['delegationCount'] = $this->_getDelegationCount($user);
+            $notifications['total'] += $notifications['delegationCount'];
+        }
+        return $notifications;
+    }
+
+    // if not using $mode === 'full', simply check if an entry exists. We really don't care about the real count for the top menu.
+    private function _getProposalCount($user, $mode = 'full')
+    {
+        $results[0] = $this->Event->ShadowAttribute->find('count', [
+            'conditions' => array(
+                'ShadowAttribute.event_org_id' => $user['org_id'],
+                'ShadowAttribute.deleted' => 0,
+            )
+        ]);
+        $results[1] = $this->Event->ShadowAttribute->find('count', [
+            'conditions' => array(
+                'ShadowAttribute.event_org_id' => $user['org_id'],
+                'ShadowAttribute.deleted' => 0,
+            ),
+            'fields' => 'distinct event_id'
+        ]);
+        return $results;
+    }
+
+    private function _getDelegationCount($user)
+    {
+        $this->EventDelegation = ClassRegistry::init('EventDelegation');
+        return $this->EventDelegation->find('count', array(
+            'recursive' => -1,
+            'conditions' => array('EventDelegation.org_id' => $user['org_id'])
+        ));
+    }
+
+    /**
+     * Generate code that is used in event alert unsubscribe link.
+     * @return string
+     */
+    public function unsubscribeCode(array $user)
+    {
+        $salt = Configure::read('Security.salt');
+        return substr(hash('sha256', "{$user['id']}|$salt"), 0, 8);
+    }
+
+    /**
+     * @param int $userId
+     * @param bool $decode
+     * @return array
+     * @throws JsonException
+     */
+    public function fetchPeriodicSettingForUser($userId, $decode = false): array
+    {
+        $filterNames = ['orgc_id', 'distribution', 'sharing_group_id', 'event_info', 'tags', 'trending_for_tags', 'include_correlations', 'trending_period_amount'];
+        $filterToDecode = ['tags', 'trending_for_tags'];
+        $defaultPeriodicSettings = [
+            'orgc_id' => '',
+            'distribution' => -1,
+            'sharing_group_id' => '',
+            'event_info' => '',
+            'tags' => '[]',
+            'trending_for_tags' => '[]',
+            'include_correlations' => '',
+            'trending_period_amount' => 2,
+        ];
+
+        $periodicSettings = $this->UserSetting->getValueForUser($userId, self::PERIODIC_USER_SETTING_KEY);
+        $periodicSettings = $periodicSettings ?: $defaultPeriodicSettings;
+
+        $periodicSettingsIndexed = [];
+        foreach ($filterNames as $filterName) {
+            $periodicSettingsIndexed[$filterName] = $periodicSettings[$filterName] ?? $defaultPeriodicSettings[$filterName];
+        }
+        if ($decode) {
+            foreach ($filterToDecode as $filter) {
+                if (!empty($periodicSettingsIndexed[$filter])) {
+                    $periodicSettingsIndexed[$filter] = JsonTool::decode($periodicSettingsIndexed[$filter]);
+                }
+            }
+        }
+        return $periodicSettingsIndexed;
+    }
+
+    /**
+     * @param array $period_filters
+     * @param string $period
+     * @return array
+     */
+    private function getUsablePeriodicSettingForUser(array $period_filters, $period='daily'): array
+    {
+        $filters = [
+            'last' => $this->__genTimerangeFilter($period),
+            'published' => true,
+        ];
+        if (!empty($period_filters['orgc_id'])) {
+            $filters['orgc_id'] = $period_filters['orgc_id'];
+        }
+        if (isset($period_filters['distribution']) && $period_filters['distribution'] >= 0) {
+            $filters['distribution'] = intval($period_filters['distribution']);
+        }
+        if (!empty($period_filters['sharing_group_id'])) {
+            $filters['sharing_group_id'] = $period_filters['sharing_group_id'];
+        }
+        if (!empty($period_filters['event_info'])) {
+            $filters['event_info'] = $period_filters['event_info'];
+        }
+        if (!empty($period_filters['tags'])) {
+            $filters['tags'] = $period_filters['tags'];
+        }
+        return $filters;
+    }
+
+    public function saveNotificationSettings(int $userId, array $data): bool
+    {
+        $existingUser = $this->find('first', [
+            'recursive' => -1,
+            'conditions' => ['User.id' => $userId],
+        ]);
+        if (empty($existingUser)) {
+            return false;
+        }
+        foreach (self::PERIODIC_NOTIFICATIONS as $notification_period) {
+            $existingUser['User'][$notification_period] = $data['User'][$notification_period];
+        }
+        $success = $this->save($existingUser, [
+            'fieldList' => array_merge(self::PERIODIC_NOTIFICATIONS, ['date_modified']),
+        ]);
+        if ($success) {
+            $periodic_settings = $data['periodic_settings'];
+            $param_to_decode = ['tags', 'trending_for_tags'];
+            foreach ($param_to_decode as $param) {
+                if (empty($periodic_settings[$param])) {
+                    $periodic_settings[$param] = '[]';
+                } else {
+                    $decodedTags = json_decode($periodic_settings[$param], true);
+                    if ($decodedTags === null) {
+                        return false;
+                    }
+                }
+            }
+            $notification_filters = [
+                'orgc_id' => $periodic_settings['orgc_id'] ?? [],
+                'distribution' => $periodic_settings['distribution'] ?? '',
+                'sharing_group_id' => $periodic_settings['distribution'] != 4 ? '' : ($periodic_settings['sharing_group_id'] ?? []),
+                'event_info' => $periodic_settings['event_info'] ?? '',
+                'tags' => $periodic_settings['tags'] ?? '[]',
+                'trending_for_tags' => $periodic_settings['trending_for_tags'] ?? '[]',
+                'include_correlations' => $periodic_settings['include_correlations'] ?? '',
+                'trending_period_amount' => $periodic_settings['trending_period_amount'] ?? 2,
+            ];
+            $new_user_setting = [
+                'UserSetting' => [
+                    'user_id' => $existingUser['User']['id'],
+                    'setting' => self::PERIODIC_USER_SETTING_KEY,
+                    'value' => $notification_filters
+                ]
+            ];
+            $success = $this->UserSetting->setSetting($existingUser['User'], $new_user_setting);
+        }
+        return !empty($success);
+    }
+
+    public function getSubscribedUsersForPeriod(string $period): array
+    {
+        return $this->find('all', [
+            'recursive' => -1,
+            'conditions' => [
+                "notification_$period" => true,
+                'disabled' => false,
+            ],
+        ]);
+    }
+
+    /**
+     * generatePeriodicSummary
+     *
+     * @param int $userId
+     * @param string $period Can be 'daily', 'weekly' or 'monthly'
+     * @param bool $rendered When false, instance of SendEmailTemplate will returned
+     * @return string|SendEmailTemplate|null
+     * @throws NotFoundException
+     * @throws InvalidArgumentException
+     * @throws JsonException
+     */
+    public function generatePeriodicSummary(int $userId, string $period, $rendered = true)
+    {
+        $allowedPeriods = array_map(function($period) {
+            return substr($period, strlen('notification_'));
+        }, self::PERIODIC_NOTIFICATIONS);
+        if (!in_array($period, $allowedPeriods, true)) {
+            throw new InvalidArgumentException(__('Invalid period. Must be one of %s', JsonTool::encode(self::PERIODIC_NOTIFICATIONS)));
+        }
+
+        $user = $this->getAuthUser($userId);
+        App::import('Tools', 'SendEmail');
+        $periodicSettings = $this->fetchPeriodicSettingForUser($userId, true);
+        $filters = $this->getUsablePeriodicSettingForUser($periodicSettings, $period);
+        $filtersForRestSearch = $filters; // filters for restSearch are slightly different than fetchEvent
+        $filters['last'] = $this->resolveTimeDelta($filters['last']);
+        $filters['sgReferenceOnly'] = true;
+        $filters['includeEventCorrelations'] = !empty($periodicSettings['include_correlations']);
+        $filters['includeGranularCorrelations'] = !empty($periodicSettings['include_correlations']);
+        $filters['noSightings'] = true;
+        $filters['fetchFullClusters'] = true;
+        $filters['fetchFullClusterRelationship'] = true;
+        $filters['includeScoresOnEvent'] = true;
+        $events = $this->Event->fetchEvent($user, $filters);
+
+        if (empty($events)) {
+            return null;
+        }
+
+        $elementCounter = 0;
+        $renderView = false;
+        $filtersForRestSearch['publish_timestamp'] = $filtersForRestSearch['last'];
+        $filtersForRestSearch['returnFormat'] = 'context';
+        $filtersForRestSearch['staticHtml'] = true;
+        unset($filtersForRestSearch['last']);
+        if (!empty($filtersForRestSearch['tags'])) {
+            $filtersForRestSearch['event_tags'] = $filtersForRestSearch['tags'];
+            unset($filtersForRestSearch['tags']);
+        }
+        $finalContext = $this->Event->restSearch($user, 'context', $filtersForRestSearch, false, false, $elementCounter, $renderView);
+        $finalContext = JsonTool::decode($finalContext->intoString());
+        $aggregated_context = $this->__renderAggregatedContext($finalContext);
+        $rollingWindows = $periodicSettings['trending_period_amount'] ?: 2;
+        $trendAnalysis = $this->Event->getTrendsForTagsFromEvents($events, $this->periodToDays($period), $rollingWindows, $periodicSettings['trending_for_tags']);
+        $tagFilterPrefixes = $periodicSettings['trending_for_tags'] ?: array_keys($trendAnalysis['all_tags']);
+        $trendData = [
+            'trendAnalysis' => $trendAnalysis,
+            'tagFilterPrefixes' => $tagFilterPrefixes,
+        ];
+        $trending_summary = $this->__renderTrendingSummary($trendData);
+        $securityRecommendationsData = [
+            'course_of_action' => $this->Event->extractRelatedCourseOfActions($events),
+        ];
+        $security_recommendations = $this->__renderSecurityRecommendations($securityRecommendationsData);
+
+        $emailTemplate = $this->prepareEmailTemplate($period);
+        $emailTemplate->set('baseurl', $this->Event->__getAnnounceBaseurl());
+        $emailTemplate->set('events', $events);
+        $emailTemplate->set('filters', $filters);
+        $emailTemplate->set('periodicSettings', $periodicSettings);
+        $emailTemplate->set('period_days', $this->periodToDays($period));
+        $emailTemplate->set('period', $period);
+        $emailTemplate->set('aggregated_context', $aggregated_context);
+        $emailTemplate->set('trending_summary', $trending_summary);
+        $emailTemplate->set('security_recommendations', $security_recommendations);
+        $emailTemplate->set('analysisLevels', $this->Event->analysisLevels);
+        $emailTemplate->set('distributionLevels', $this->Event->distributionLevels);
+        if ($rendered) {
+            $summary = $emailTemplate->render();
+            return $summary->format() === 'text' ? $summary->text : $summary->html;
+        }
+        return $emailTemplate;
+    }
+
+    private function __renderAggregatedContext(array $restSearchOutput): string
+    {
+        return $this->__renderGeneric('Events' . DS . 'module_views', 'context_view', $restSearchOutput);
+    }
+
+    private function __renderTrendingSummary(array $trendData): string
+    {
+        return $this->__renderGeneric('Elements' . DS . 'Events', 'trendingSummary', $trendData);
+    }
+
+    private function __renderSecurityRecommendations(array $data): string
+    {
+        return $this->__renderGeneric('Elements' . DS . 'Events', 'securityRecommendations', $data);
+    }
+
+    private function __renderGeneric(string $viewPath, string $viewFile, array $viewVars): string
+    {
+        $view = new View();
+        $view->autoLayout = false;
+        $view->helpers = ['TextColour'];
+        $view->loadHelpers();
+
+        $view->set($viewVars);
+        $view->set('baseurl', $this->Event->__getAnnounceBaseurl());
+        $view->viewPath = $viewPath;
+        return $view->render($viewFile, false);
+    }
+
+    private function __getUsableFilters(array $period_filters, string $period='daily'): array
+    {
+        $filters = [
+            'last' => $this->__genTimerangeFilter($period),
+            'published' => true,
+            'includeScoresOnEvent' => true,
+        ];
+        if (!empty($period_filters['orgc_id'])) {
+            $filters['orgc_id'] = $period_filters['orgc_id'];
+        }
+        if (isset($period_filters['distribution']) && $period_filters['distribution'] >= 0) {
+            $filters['distribution'] = intval($period_filters['distribution']);
+        }
+        if (!empty($period_filters['sharing_group_id'])) {
+            $filters['sharing_group_id'] = $period_filters['sharing_group_id'];
+        }
+        if (!empty($period_filters['event_info'])) {
+            $filters['event_info'] = $period_filters['event_info'];
+        }
+        if (!empty($period_filters['tags'])) {
+            $filters['tags'] = $period_filters['tags'];
+        }
+        return $filters;
+    }
+    private function __genTimerangeFilter(string $period='daily'): string
+    {
+        return $this->periodToDays($period) . 'd';
+    }
+
+    private function periodToDays(string $period='daily'): int
+    {
+        if ($period === 'daily') {
+            return 1;
+        } else if ($period === 'weekly') {
+            return 7;
+        } else {
+            return 31;
+        }
+    }
+
+    private function prepareEmailTemplate(string $period = 'daily'): SendEmailTemplate
+    {
+        $subject = sprintf('[%s MISP] %s %s', Configure::read('MISP.org'), Inflector::humanize($period), __('Notification - %s', (new DateTime())->format('Y-m-d')));
+        $template = new SendEmailTemplate("notification_$period");
+        $template->subject($subject);
+        return $template;
+    }
+
+    /**
+     * @return bool
+     */
+    public function advancedAuthkeysEnabled()
+    {
+        return !empty(Configure::read("Security.advanced_authkeys"));
+    }
+
+    /**
+     * @param array $users
+     * @return array
+     * @throws RedisException
+     */
+    public function attachIsUserMonitored(array $users)
+    {
+        if (!empty(Configure::read('Security.user_monitoring_enabled'))) {
+            $redis = RedisTool::init();
+            $redis->pipeline();
+            foreach ($users as $user) {
+                $redis->sismember('misp:monitored_users', $user['User']['id']);
+            }
+            $output = $redis->exec();
+
+            foreach ($users as $key => $user) {
+                $users[$key]['User']['monitored'] = $output[$key];
+            }
+        }
+        return $users;
+    }
+
+    public function checkForSessionDestruction($id)
+    {
+        if (empty(CakeSession::read('creation_timestamp'))) {
+            return false;
+        }
+        $redis = $this->setupRedis();
+        if ($redis) {
+            $cutoff = $redis->get('misp:session_destroy:' . $id);
+            $allcutoff = $redis->get('misp:session_destroy:all');
+            if (
+                empty($cutoff) || 
+                (
+                    !empty($cutoff) &&
+                    !empty($allcutoff) &&
+                    $allcutoff < $cutoff
+                ) 
+            ) {
+                $cutoff = $allcutoff;
+            }
+            if ($cutoff && CakeSession::read('creation_timestamp') < $cutoff) {
+                return true;
+            }
+        }
+        return false;
     }
 }

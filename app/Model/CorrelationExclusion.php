@@ -1,6 +1,5 @@
 <?php
 App::uses('AppModel', 'Model');
-App::uses('RandomTool', 'Tools');
 
 class CorrelationExclusion extends AppModel
 {
@@ -9,6 +8,7 @@ class CorrelationExclusion extends AppModel
     public $key = 'misp:correlation_exclusions';
 
     public $actsAs = array(
+        'AuditLog',
         'SysLogLogable.SysLogLogable' => array(
                 'userModel' => 'User',
                 'userKey' => 'user_id',
@@ -16,9 +16,32 @@ class CorrelationExclusion extends AppModel
         'Containable',
     );
 
+    public $validate = [
+        'value' => [
+            'uniqueValue' => [
+                'rule' => 'isUnique',
+                'message' => 'Value is already in the exclusion list.'
+            ]
+        ]
+    ];
+
     public function afterSave($created, $options = array())
     {
         $this->cacheValues();
+    }
+
+    public function beforeDelete($cascade = true)
+    {
+        $exclusion = $this->find('first', [
+            'recursive' => -1,
+            'conditions' => [
+                'id' => $this->id
+            ]
+        ]);
+        $this->Correlation = ClassRegistry::init('Correlation');
+        if (!empty($exclusion)) {
+            $this->Correlation->correlateValueRouter($exclusion['CorrelationExclusion']['value']);
+        }
     }
 
     public function afterDelete()
@@ -29,11 +52,11 @@ class CorrelationExclusion extends AppModel
     public function cacheValues()
     {
         try {
-            $redis = $this->setupRedisWithException();
+            $redis = RedisTool::init();
         } catch (Exception $e) {
             return false;
         }
-        $redis->del($this->key);
+        RedisTool::unlink($redis, $this->key);
         $exclusions = $this->find('column', [
             'fields' => ['value']
         ]);
@@ -43,27 +66,26 @@ class CorrelationExclusion extends AppModel
     public function cleanRouter($user)
     {
         if (Configure::read('MISP.background_jobs')) {
-            $this->Job = ClassRegistry::init('Job');
-            $this->Job->create();
-            $data = [
-                    'worker' => 'default',
-                    'job_type' => 'clean_correlation_exclusions',
-                    'job_input' => '',
-                    'status' => 0,
-                    'retries' => 0,
-                    'org' => $user['Organisation']['name'],
-                    'message' => __('Cleaning up excluded correlations.'),
-            ];
-            $this->Job->save($data);
-            $jobId = $this->Job->id;
-            $process_id = CakeResque::enqueue(
-                    'default',
-                    'AdminShell',
-                    ['cleanExcludedCorrelations', $jobId],
-                    true
+            /** @var Job $job */
+            $job = ClassRegistry::init('Job');
+            $jobId = $job->createJob(
+                $user,
+                Job::WORKER_DEFAULT,
+                'clean_correlation_exclusions',
+                '',
+                __('Cleaning up excluded correlations.')
             );
-            $this->Job->saveField('process_id', $process_id);
-            $message = __('Cleanup queued for background execution.');
+
+            $this->getBackgroundJobsTool()->enqueue(
+                BackgroundJobsTool::DEFAULT_QUEUE,
+                BackgroundJobsTool::CMD_ADMIN,
+                [
+                    'cleanExcludedCorrelations',
+                    $jobId
+                ],
+                true,
+                $jobId
+            );
         } else {
             $this->clean();
         }
@@ -71,38 +93,20 @@ class CorrelationExclusion extends AppModel
 
     public function clean($jobId = false)
     {
-        try {
-            $redis = $this->setupRedisWithException();
-        } catch (Exception $e) {
-            return false;
-        }
-        $this->Correlation = ClassRegistry::init('Correlation');
-        $exclusions = $redis->sMembers($this->key);
-        $conditions = [];
-        $exclusions = array_chunk($exclusions, 100);
         if ($jobId) {
             $this->Job = ClassRegistry::init('Job');
             $this->Job->id = $jobId;
         }
-        $total = count($exclusions);
-        foreach ($exclusions as $exclusion_chunk) {
-            $i = 0;
-            foreach ($exclusion_chunk as $exclusion) {
-                $i += 1;
-                if (!empty($exclusion)) {
-                    if ($exclusion[0] === '%' || substr($exclusion, -1) === '%') {
-                        $conditions['OR'][] = ['Correlation.value LIKE' => $exclusion];
-                    } else {
-                        $conditions['OR']['Correlation.value'][] = $exclusion;
-                    }
-                }
-                if (!empty($conditions)) {
-                    $this->Correlation->deleteAll($conditions);
-                }
-                if ($i % 100 === 0) {
-                    $this->Job->saveProgress($jobId, 'Chunk ' . $i . '/' . $total, $i * 100 / $total);
-                }
-            }
+        $values = $this->find('column', [
+            'recursive' => -1,
+            'fields' => ['value']
+        ]);
+        $this->Correlation = ClassRegistry::init('Correlation');
+        foreach ($values as $value) {
+            $this->Correlation->purgeByValue($value);
+        }
+        if ($jobId) {
+            $this->Job->saveProgress($jobId, 'Job done.', 100);
         }
     }
 }

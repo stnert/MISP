@@ -2,9 +2,50 @@
 App::uses('HttpSocketResponse', 'Network/Http');
 App::uses('HttpSocket', 'Network/Http');
 
-class HttpClientJsonException extends Exception
+class HttpSocketHttpException extends Exception
 {
-    /** @var HttpSocketResponse */
+    /** @var HttpSocketResponseExtended */
+    private $response;
+
+    /** @var string|null */
+    private $url;
+
+    /**
+     * @param HttpSocketResponseExtended $response
+     * @param string|null $url
+     */
+    public function __construct(HttpSocketResponseExtended $response, $url = null)
+    {
+        $this->response = $response;
+        $this->url = $url;
+        $message = "Remote server returns HTTP error code $response->code";
+        if ($url) {
+            $message .= " for URL $url";
+        }
+        parent::__construct($message, (int)$response->code);
+    }
+
+    /**
+     * @return HttpSocketResponseExtended
+     */
+    public function getResponse()
+    {
+        return $this->response;
+    }
+
+    /**
+     * Request URL
+     * @return string|null
+     */
+    public function getUrl()
+    {
+        return $this->url;
+    }
+}
+
+class HttpSocketJsonException extends Exception
+{
+    /** @var HttpSocketResponseExtended */
     private $response;
 
     public function __construct($message, HttpSocketResponseExtended $response, Throwable $previous = null)
@@ -14,7 +55,7 @@ class HttpClientJsonException extends Exception
     }
 
     /**
-     * @return HttpSocketResponse
+     * @return HttpSocketResponseExtended
      */
     public function getResponse()
     {
@@ -25,12 +66,24 @@ class HttpClientJsonException extends Exception
 class HttpSocketResponseExtended extends HttpSocketResponse
 {
     /**
+     * @return bool
+     */
+    public function isNotModified()
+    {
+        return $this->code == 304;
+    }
+
+    /**
      * @param string $message
      * @throws SocketException
      */
     public function parseResponse($message)
     {
         parent::parseResponse($message);
+
+        if ($this->body === '') {
+            return; // skip decoding body if is empty
+        }
 
         $contentEncoding = $this->getHeader('Content-Encoding');
         if ($contentEncoding === 'gzip' && function_exists('gzdecode')) {
@@ -44,7 +97,7 @@ class HttpSocketResponseExtended extends HttpSocketResponse
                 throw new SocketException("Response should be brotli encoded, but brotli decoding failed.");
             }
         } else if ($contentEncoding) {
-            throw new SocketException("Remote server returns unsupported content encoding '$contentEncoding'");
+            throw new SocketException("Remote server returns unsupported content encoding '$contentEncoding'.");
         }
     }
 
@@ -52,33 +105,30 @@ class HttpSocketResponseExtended extends HttpSocketResponse
      * Decodes JSON string and throws exception if string is not valid JSON.
      *
      * @return array
-     * @throws HttpClientJsonException
+     * @throws HttpSocketJsonException
      */
     public function json()
     {
         try {
-            if (defined('JSON_THROW_ON_ERROR')) {
-                // JSON_THROW_ON_ERROR is supported since PHP 7.3
-                $decoded = json_decode($this->body, true, 512, JSON_THROW_ON_ERROR);
-            } else {
-                $decoded = json_decode($this->body, true);
-                if ($decoded === null) {
-                    throw new UnexpectedValueException('Could not parse JSON: ' . json_last_error_msg(), json_last_error());
-                }
-            }
-            return $decoded;
+            return JsonTool::decode($this->body);
         } catch (Exception $e) {
-            throw new HttpClientJsonException('Could not parse response as JSON.', $this, $e);
+            throw new HttpSocketJsonException('Could not parse response as JSON.', $this, $e);
         }
     }
 }
 
 /**
  * Supports response compression and also decodes response as JSON
+ * @method HttpSocketResponseExtended get($uri = null, $query = array(), $request = array())
+ * @method HttpSocketResponseExtended post($uri = null, $data = array(), $request = array())
+ * @method HttpSocketResponseExtended head($uri = null, $query = array(), $request = array())
  */
 class HttpSocketExtended extends HttpSocket
 {
     public $responseClass = 'HttpSocketResponseExtended';
+
+    /** @var callable */
+    private $onConnect;
 
     public function __construct($config = array())
     {
@@ -89,6 +139,37 @@ class HttpSocketExtended extends HttpSocket
                 $this->config['request']['header']['Accept-Encoding'] = implode(', ', $this->acceptedEncodings());
             }
         }
+    }
+
+    public function connect()
+    {
+        $connected = parent::connect();
+        if ($this->onConnect) {
+            $handler = $this->onConnect;
+            $handler($this);
+        }
+        return $connected;
+    }
+
+    /**
+     * Set callback method, that will be called after connection to remote server is established.
+     * @param callable $callback
+     * @return void
+     */
+    public function onConnectHandler(callable $callback)
+    {
+        $this->onConnect = $callback;
+    }
+
+    /**
+     * @return array|null
+     */
+    public function getMetaData()
+    {
+        if ($this->connection) {
+            return stream_get_meta_data($this->connection);
+        }
+        return null;
     }
 
     /**

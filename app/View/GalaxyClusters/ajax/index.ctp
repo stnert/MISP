@@ -5,10 +5,8 @@
         }
     }
     echo $this->element('/genericElements/IndexTable/index_table', array(
+        'containerId' => 'clusters',
         'data' => array(
-            'paginatorOptions' => array(
-                'update' => '#clusters_div',
-            ),
             'data' => $list,
             'top_bar' => array(
                 'children' => array(
@@ -181,7 +179,7 @@
             ),
             'actions' => array(
                 array(
-                    'title' => 'Restore Cluster',
+                    'title' => __('Restore Cluster'),
                     'url' => '/galaxy_clusters/restore',
                     'url_params_data_paths' => array(
                         'GalaxyCluster.id'
@@ -203,7 +201,7 @@
                     ),
                 ),
                 array(
-                    'title' => 'Publish Cluster',
+                    'title' => __('Publish Cluster'),
                     'url' => '/galaxy_clusters/publish',
                     'url_params_data_paths' => array(
                         'GalaxyCluster.id'
@@ -229,7 +227,7 @@
                     ),
                 ),
                 array(
-                    'title' => 'View correlation graph',
+                    'title' => __('View correlation graph'),
                     'url' => '/galaxies/viewGraph',
                     'url_params_data_paths' => array(
                         'GalaxyCluster.id'
@@ -237,16 +235,7 @@
                     'icon' => 'share-alt',
                 ),
                 array(
-                    'title' => 'View',
-                    'url' => '/galaxy_clusters/view',
-                    'url_params_data_paths' => array(
-                        'GalaxyCluster.id'
-                    ),
-                    'icon' => 'eye',
-                    'dbclickAction' => true
-                ),
-                array(
-                    'title' => 'Fork',
+                    'title' => __('Fork'),
                     'url' => '/galaxy_clusters/add',
                     'url_params_data_paths' => array(
                         'GalaxyCluster.galaxy_id'
@@ -269,7 +258,7 @@
                     ),
                 ),
                 array(
-                    'title' => 'Edit',
+                    'title' => __('Edit'),
                     'url' => '/galaxy_clusters/edit',
                     'url_params_data_paths' => array(
                         'GalaxyCluster.id'
@@ -293,7 +282,7 @@
                     ),
                 ),
                 array(
-                    'title' => 'Delete',
+                    'title' => __('Delete'),
                     'icon' => 'trash',
                     'onclick' => 'simplePopup(\'' . $baseurl . '/galaxy_clusters/delete/[onclick_params_data_path]\');',
                     'onclick_params_data_path' => 'GalaxyCluster.id',
@@ -310,13 +299,22 @@
                         )
                     ),
                 ),
+                array(
+                    'title' => __('View'),
+                    'url' => '/galaxy_clusters/view',
+                    'url_params_data_paths' => array(
+                        'GalaxyCluster.id'
+                    ),
+                    'icon' => 'eye',
+                    'dbclickAction' => true
+                ),
             )
         )
     ));
 ?>
 
-<script type="text/javascript">
-    $(document).ready(function(){
+<script>
+    $(function(){
         var passedArgsArray = <?php echo $passedArgs; ?>;
         var galaxyId = "<?php echo h($galaxy_id); ?>";
         if (passedArgsArray['context'] === undefined || passedArgsArray['context'] === "") {
@@ -327,4 +325,3 @@
         });
     });
 </script>
-<?php echo $this->Js->writeBuffer(); ?>

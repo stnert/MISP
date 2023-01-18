@@ -7,12 +7,9 @@ App::uses('AppController', 'Controller');
 class ThreadsController extends AppController
 {
     public $components = array(
-        'Security',
         'RequestHandler',
         'Session',
     );
-
-    public $helpers = array('Js' => array('Jquery'));
 
     public $paginate = array(
             'limit' => 60,
@@ -142,7 +139,7 @@ class ThreadsController extends AppController
             }
         }
         if ($this->request->is('ajax')) {
-            $this->layout = 'ajax';
+            $this->layout = false;
             $this->render('/Elements/eventdiscussion');
         }
     }
@@ -151,7 +148,7 @@ class ThreadsController extends AppController
     {
         $this->loadModel('Posts');
         $this->loadModel('SharingGroup');
-        $sgids = $this->SharingGroup->fetchAllAuthorised($this->Auth->user());
+        $sgids = $this->SharingGroup->authorizedIds($this->Auth->user());
         $conditions = null;
         if (!$this->_isSiteAdmin()) {
             $conditions['AND']['OR'] = array(

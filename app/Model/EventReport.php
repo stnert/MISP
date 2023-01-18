@@ -3,10 +3,12 @@ App::uses('AppModel', 'Model');
 
 /**
  * @property Event $Event
+ * @property SharingGroup $SharingGroup
  */
 class EventReport extends AppModel
 {
     public $actsAs = array(
+        'AuditLog',
         'Containable',
         'SysLogLogable.SysLogLogable' => array(
             'userModel' => 'User',
@@ -30,18 +32,22 @@ class EventReport extends AppModel
             'unique' => array(
                 'rule' => 'isUnique',
                 'message' => 'The UUID provided is not unique',
-                'required' => 'create'
+                'on' => 'create'
             )
         ),
+        'name' => [
+            'rule' => 'notBlank',
+            'required' => true,
+        ],
         'distribution' => array(
             'rule' => array('inList', array('0', '1', '2', '3', '4', '5')),
             'message' => 'Options: Your organisation only, This community only, Connected communities, All communities, Sharing group, Inherit event',
             'required' => true
-        )
+        ),
     );
 
-    public $captureFields = array('uuid', 'name', 'content', 'distribution', 'sharing_group_id', 'timestamp', 'deleted', 'event_id');
-    public $defaultContain = array(
+    const CAPTURE_FIELDS = array('uuid', 'name', 'content', 'distribution', 'sharing_group_id', 'timestamp', 'deleted', 'event_id');
+    const DEFAULT_CONTAIN = array(
         'SharingGroup' => array('fields' => array('id', 'name', 'uuid')),
         'Event' => array(
             'fields' =>  array('Event.id', 'Event.orgc_id', 'Event.org_id', 'Event.info', 'Event.user_id', 'Event.date'),
@@ -63,42 +69,39 @@ class EventReport extends AppModel
 
     public function beforeValidate($options = array())
     {
-        parent::beforeValidate();
-        // generate UUID if it doesn't exist
-        if (empty($this->data['EventReport']['uuid'])) {
-            $this->data['EventReport']['uuid'] = CakeText::uuid();
+        $eventReport = &$this->data['EventReport'];
+        if (empty($eventReport['uuid'])) {
+            // generate UUID if it doesn't exist
+            $eventReport['uuid'] = CakeText::uuid();
         } else {
-            $this->data['EventReport']['uuid'] = strtolower($this->data['EventReport']['uuid']);
+            $eventReport['uuid'] = strtolower($eventReport['uuid']);
         }
         // generate timestamp if it doesn't exist
-        if (empty($this->data['EventReport']['timestamp'])) {
-            $date = new DateTime();
-            $this->data['EventReport']['timestamp'] = $date->getTimestamp();
+        if (empty($eventReport['timestamp'])) {
+            $eventReport['timestamp'] = time();
         }
-        if ($this->data['EventReport']['distribution'] != 4) {
-            $this->data['EventReport']['sharing_group_id'] = 0;
+        if ($eventReport['distribution'] != 4) {
+            $eventReport['sharing_group_id'] = 0;
         }
         // Set defaults for when some of the mandatory fields don't have defaults
         // These fields all have sane defaults either based on another field, or due to server settings
-        if (!isset($this->data['EventReport']['distribution'])) {
-            $this->data['EventReport']['distribution'] = Configure::read('MISP.default_attribute_distribution');
-            if ($this->data['EventReport']['distribution'] == 'event') {
-                $this->data['EventReport']['distribution'] = 5;
-            }
+        if (!isset($eventReport['distribution'])) {
+            $eventReport['distribution'] = $this->Event->Attribute->defaultDistribution();
         }
         return true;
     }
+
     /**
      * captureReport Gets a report then save it
      *
-     * @param  array $user
-     * @param  array $report
-     * @param  int|string $eventId
+     * @param array $user
+     * @param array $report
+     * @param int $eventId
      * @return array Any errors preventing the capture
+     * @throws Exception
      */
     public function captureReport(array $user, array $report, $eventId)
     {
-        $this->Log = ClassRegistry::init('Log');
         if (!isset($report['EventReport'])) {
             $report = ['EventReport' => $report];
         }
@@ -108,10 +111,10 @@ class EventReport extends AppModel
         }
         $report = $this->captureSG($user, $report);
         $this->create();
-        $errors = $this->saveAndReturnErrors($report, ['fieldList' => $this->captureFields]);
+        $errors = $this->saveAndReturnErrors($report, ['fieldList' => self::CAPTURE_FIELDS]);
         if (!empty($errors)) {
-            $this->Log->createLogEntry($user, 'add', 'EventReport', 0,
-                __('Event Report dropped due to validation for Event report %s failed: %s', $report['EventReport']['uuid'], ' failed: ' . $report['EventReport']['name']),
+            $this->loadLog()->createLogEntry($user, 'add', 'EventReport', 0,
+                __('Event Report dropped due to validation for Event report %s failed: %s', $this->data['EventReport']['uuid'], $this->data['EventReport']['name']),
                 __('Validation errors: %s.%sFull report: %s', json_encode($errors), PHP_EOL, json_encode($report['EventReport']))
             );
         }
@@ -178,7 +181,7 @@ class EventReport extends AppModel
         } else {
             unset($report['EventReport']['timestamp']);
         }
-        $errors = $this->saveAndReturnErrors($report, ['fieldList' => $this->captureFields], $errors);
+        $errors = $this->saveAndReturnErrors($report, ['fieldList' => self::CAPTURE_FIELDS], $errors);
         if (empty($errors)) {
             $this->Event->unpublishEvent($eventId);
         }
@@ -234,7 +237,7 @@ class EventReport extends AppModel
     {
         $this->Event = ClassRegistry::init('Event');
         if (isset($report['EventReport']['distribution']) && $report['EventReport']['distribution'] == 4) {
-            $report['EventReport'] = $this->Event->__captureSGForElement($report['EventReport'], $user);
+            $report['EventReport'] = $this->Event->captureSGForElement($report['EventReport'], $user);
         }
         return $report;
     }
@@ -247,10 +250,9 @@ class EventReport extends AppModel
      */
     public function buildACLConditions(array $user)
     {
-        $this->Event = ClassRegistry::init('Event');
         $conditions = array();
         if (!$user['Role']['perm_site_admin']) {
-            $sgids = $this->Event->cacheSgids($user, true);
+            $sgids = $this->SharingGroup->authorizedIds($user);
             $eventConditions = $this->Event->createEventConditions($user);
             $conditions = array(
                 'AND' => array(
@@ -270,6 +272,43 @@ class EventReport extends AppModel
         }
         return $conditions;
     }
+
+    /**
+     * buildACLConditions Generate ACL conditions for viewing the report
+     *
+     * @param  array $user
+     * @param  array $events
+     * @return array
+     */
+    public function attachReportCountsToEvents(array $user, $events)
+    {
+        if (!$user['Role']['perm_site_admin']) {
+            $sgids = $this->SharingGroup->authorizedIds($user);
+        }
+        foreach ($events as $k => $event) {
+            $conditions = [
+                'AND' => [
+                    [
+                        'Event.id' => $event['Event']['id']
+                    ]
+                ]
+            ];
+            if (!$user['Role']['perm_site_admin'] && $event['Event']['org_id'] != $user['org_id']) {
+                $conditions['AND'][] = [
+                    'EventReport.distribution' => [1, 2, 3, 5],
+                    'AND '=> [
+                        'EventReport.distribution' => 4,
+                        'EventReport.sharing_group_id' => $sgids,
+                    ]
+                ];
+            }
+            $events[$k]['Event']['report_count'] = $this->find('count', [
+                'conditions' => $conditions
+            ]);
+        }
+        return $events;
+    }
+
 
     /**
      * fetchById Simple ACL-aware method to fetch a report by Id or UUID
@@ -315,7 +354,7 @@ class EventReport extends AppModel
     {
         $params = array(
             'conditions' => $this->buildACLConditions($user),
-            'contain' => $this->defaultContain,
+            'contain' => self::DEFAULT_CONTAIN,
             'recursive' => -1
         );
         if ($full) {
@@ -369,7 +408,7 @@ class EventReport extends AppModel
             return $report;
         } else {
             if (in_array('edit', $authorizations) || in_array('delete', $authorizations)) {
-                $checkResult = $this->canEditReport($user, $report);
+                $checkResult = $user['Role']['perm_site_admin'] || ($report['Event']['orgc_id'] === $user['org_id']);
                 if ($checkResult !== true) {
                     if ($throwErrors) {
                         throw new UnauthorizedException($checkResult);
@@ -379,20 +418,6 @@ class EventReport extends AppModel
             }
             return $report;
         }
-    }
-
-    public function canEditReport(array $user, array $report)
-    {
-        if ($user['Role']['perm_site_admin']) {
-            return true;
-        }
-        if (empty($report['Event'])) {
-            return __('Could not find associated event');
-        }
-        if ($report['Event']['orgc_id'] != $user['org_id']) {
-            return __('Only the creator organisation of the event can modify the report');
-        }
-        return true;
     }
 
     public function reArrangeReport(array $report)
@@ -463,15 +488,17 @@ class EventReport extends AppModel
         $objects = [];
         $templateConditions = [];
         foreach ($event['Object'] as $k => $object) {
-            foreach ($object['Attribute'] as &$objectAttribute) {
-                unset($objectAttribute['ShadowAttribute']);
-                $objectAttribute['object_uuid'] = $object['uuid'];
-                $attributes[$objectAttribute['uuid']] = $objectAttribute;
+            if (isset($object['Attribute'])) {
+                foreach ($object['Attribute'] as &$objectAttribute) {
+                    unset($objectAttribute['ShadowAttribute']);
+                    $objectAttribute['object_uuid'] = $object['uuid'];
+                    $attributes[$objectAttribute['uuid']] = $objectAttribute;
 
-                foreach ($objectAttribute['AttributeTag'] as $at) {
-                    $allTagNames[$at['Tag']['name']] = $at['Tag'];
+                    foreach ($objectAttribute['AttributeTag'] as $at) {
+                        $allTagNames[$at['Tag']['name']] = $at['Tag'];
+                    }
+                    $this->Event->Attribute->removeGalaxyClusterTags($objectAttribute);
                 }
-                $this->Event->Attribute->removeGalaxyClusterTags($objectAttribute);
             }
             $objects[$object['uuid']] = $object;
 
@@ -697,6 +724,7 @@ class EventReport extends AppModel
         $complexTypeTool = new ComplexTypeTool();
         $this->Warninglist = ClassRegistry::init('Warninglist');
         $complexTypeTool->setTLDs($this->Warninglist->fetchTLDLists());
+        $complexTypeTool->setSecurityVendorDomains($this->Warninglist->fetchSecurityVendorDomains());
 
         $complexTypeToolResult = $complexTypeTool->checkFreeText($report['EventReport']['content']);
         $replacementResult = $this->transformFreeTextIntoReplacement($user, $report, $complexTypeToolResult);
@@ -770,24 +798,26 @@ class EventReport extends AppModel
         }
 
         foreach ($clusters as $cluster) {
-            $cluster['GalaxyCluster']['colour'] = '#0088cc';
-            $tagName = $cluster['GalaxyCluster']['tag_name'];
-            $found = $this->isValidReplacementTag($content, $tagName);
-            if ($found) {
-                $replacedContext[$tagName][$tagName] = $cluster['GalaxyCluster'];
-            }
-            $toSearch = ' ' . $cluster['GalaxyCluster']['value'] . ' ';
-            $found = strpos($originalContent, $toSearch) !== false;
-            if ($found) {
-                $replacedContext[$cluster['GalaxyCluster']['value']][$tagName] = $cluster['GalaxyCluster'];
-            }
-            if ($options['synonyms']) {
-                foreach ($cluster['GalaxyElement'] as $element) {
-                    if (strlen($element['value']) >= $options['synonyms_min_characters']) {
-                        $toSearch = ' ' . $element['value'] . ' ';
-                        $found = strpos($content, $toSearch) !== false;
-                        if ($found) {
-                            $replacedContext[$element['value']][$tagName] = $cluster['GalaxyCluster'];
+            if (strlen($cluster['GalaxyCluster']['value']) > 2) {
+                $cluster['GalaxyCluster']['colour'] = '#0088cc';
+                $tagName = $cluster['GalaxyCluster']['tag_name'];
+                $found = $this->isValidReplacementTag($content, $tagName);
+                if ($found) {
+                    $replacedContext[$tagName][$tagName] = $cluster['GalaxyCluster'];
+                }
+                $toSearch = ' ' . $cluster['GalaxyCluster']['value'] . ' ';
+                $found = strpos($originalContent, $toSearch) !== false;
+                if ($found) {
+                    $replacedContext[$cluster['GalaxyCluster']['value']][$tagName] = $cluster['GalaxyCluster'];
+                }
+                if ($options['synonyms']) {
+                    foreach ($cluster['GalaxyElement'] as $element) {
+                        if (strlen($element['value']) >= $options['synonyms_min_characters']) {
+                            $toSearch = ' ' . $element['value'] . ' ';
+                            $found = strpos($content, $toSearch) !== false;
+                            if ($found) {
+                                $replacedContext[$element['value']][$tagName] = $cluster['GalaxyCluster'];
+                            }
                         }
                     }
                 }
@@ -801,23 +831,25 @@ class EventReport extends AppModel
                 'contain' => $clusterContain
             ]);
             foreach ($attackClusters as $cluster) {
-                $cluster['GalaxyCluster']['colour'] = '#0088cc';
-                $tagName = $cluster['GalaxyCluster']['tag_name'];
-                $toSearch = ' ' . $cluster['GalaxyCluster']['value'] . ' ';
-                $found = strpos($content, $toSearch) !== false;
-                if ($found) {
-                    $replacedContext[$cluster['GalaxyCluster']['value']][$tagName] = $cluster['GalaxyCluster'];
-                } else {
-                    $clusterParts = explode(' - ', $cluster['GalaxyCluster']['value'], 2);
-                    $toSearch = ' ' . $clusterParts[0] . ' ';
+                if (strlen($cluster['GalaxyCluster']['value']) > 2) {
+                    $cluster['GalaxyCluster']['colour'] = '#0088cc';
+                    $tagName = $cluster['GalaxyCluster']['tag_name'];
+                    $toSearch = ' ' . $cluster['GalaxyCluster']['value'] . ' ';
                     $found = strpos($content, $toSearch) !== false;
                     if ($found) {
-                        $replacedContext[$clusterParts[0]][$tagName] = $cluster['GalaxyCluster'];
-                    } else if (isset($clusterParts[1])) {
-                        $toSearch = ' ' . $clusterParts[1] . ' ';
+                        $replacedContext[$cluster['GalaxyCluster']['value']][$tagName] = $cluster['GalaxyCluster'];
+                    } else {
+                        $clusterParts = explode(' - ', $cluster['GalaxyCluster']['value'], 2);
+                        $toSearch = ' ' . $clusterParts[0] . ' ';
                         $found = strpos($content, $toSearch) !== false;
                         if ($found) {
-                            $replacedContext[$clusterParts[1]][$tagName] = $cluster['GalaxyCluster'];
+                            $replacedContext[$clusterParts[0]][$tagName] = $cluster['GalaxyCluster'];
+                        } elseif (isset($clusterParts[1])) {
+                            $toSearch = ' ' . $clusterParts[1] . ' ';
+                            $found = strpos($content, $toSearch) !== false;
+                            if ($found) {
+                                $replacedContext[$clusterParts[1]][$tagName] = $cluster['GalaxyCluster'];
+                            }
                         }
                     }
                 }
@@ -871,7 +903,7 @@ class EventReport extends AppModel
             'url' => $url
         ];
         if (!empty($module)) {
-            $result = $this->Module->queryModuleServer($modulePayload, false);
+            $result = $this->Module->queryModuleServer($modulePayload, false, 'Enrichment', false, []);
             if (empty($result['results'][0]['values'][0])) {
                 return '';
             }
@@ -910,7 +942,7 @@ class EventReport extends AppModel
             if ($tagId === -1) {
                 $tagId = $this->EventTag->Tag->captureTag(['name' => $tagName], $user);
             }
-            $this->EventTag->attachTagToEvent($eventId, $tagId);
+            $this->EventTag->attachTagToEvent($eventId, ['id' => $tagId]);
         }
     }
 

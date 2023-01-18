@@ -18,18 +18,6 @@
  * @since         CakePHP(tm) v 0.2.9
  * @license       MIT License (http://www.opensource.org/licenses/mit-license.php)
  */
-// This is GovCERT.CZ modified method to make translation faster
-function __($singular, $args = null) {
-    if (!$singular) {
-        return null;
-    }
-
-    App::uses('I18n', 'I18n');
-    // Enforce english translation to make everything faster
-    $translated = I18n::translate($singular, null, null, I18n::LC_MESSAGES, null, 'eng');
-    $arguments = func_get_args();
-    return I18n::insertArgs($translated, array_slice($arguments, 1));
-}
 /**
  * Use the DS to separate the directories in other defines
  */
@@ -44,42 +32,49 @@ if (!defined('DS')) {
 
 /**
  * The full path to the directory which holds "app", WITHOUT a trailing DS.
- *
  */
 if (!defined('ROOT')) {
-	define('ROOT', dirname(dirname(dirname(__FILE__))));
+	define('ROOT', dirname(__DIR__, 2));
 }
 /**
  * The actual directory name for the "app".
- *
  */
 if (!defined('APP_DIR')) {
-	define('APP_DIR', basename(dirname(dirname(__FILE__))));
+	define('APP_DIR', basename(dirname(__DIR__)));
 }
 
 /**
- * The absolute path to the "cake" directory, WITHOUT a trailing DS.
- *
- * Un-comment this line to specify a fixed path to CakePHP.
- * This should point at the directory containing `Cake`.
- *
- * For ease of development CakePHP uses PHP's include_path.  If you
- * cannot modify your include_path set this value.
- *
- * Leaving this constant undefined will result in it being defined in Cake/bootstrap.php
+ * This auto-detects CakePHP as a composer installed library.
+ * You may remove this if you are not planning to use composer (not recommended, though).
  */
-	define('CAKE_CORE_INCLUDE_PATH', ROOT . DS . APP_DIR . DS .'Lib' . DS . 'cakephp' . DS . 'lib');
+$vendorPath = ROOT . DS . APP_DIR . DS . 'Vendor' . DS . 'cakephp' . DS . 'cakephp' . DS . 'lib';
+$dispatcher = 'Cake' . DS . 'Console' . DS . 'ShellDispatcher.php';
+if (!defined('CAKE_CORE_INCLUDE_PATH') && file_exists($vendorPath . DS . $dispatcher)) {
+    define('CAKE_CORE_INCLUDE_PATH', $vendorPath);
+} else {
+    /**
+     * The absolute path to the "cake" directory, WITHOUT a trailing DS.
+     *
+     * Un-comment this line to specify a fixed path to CakePHP.
+     * This should point at the directory containing `Cake`.
+     *
+     * For ease of development CakePHP uses PHP's include_path.  If you
+     * cannot modify your include_path set this value.
+     *
+     * Leaving this constant undefined will result in it being defined in Cake/bootstrap.php
+     */
+    define('CAKE_CORE_INCLUDE_PATH', ROOT . DS . APP_DIR . DS . 'Lib' . DS . 'cakephp' . DS . 'lib');
+}
 
 /**
  * Editing below this line should NOT be necessary.
  * Change at your own risk.
- *
  */
 if (!defined('WEBROOT_DIR')) {
-	define('WEBROOT_DIR', basename(dirname(__FILE__)));
+	define('WEBROOT_DIR', basename(__DIR__));
 }
 if (!defined('WWW_ROOT')) {
-	define('WWW_ROOT', dirname(__FILE__) . DS);
+	define('WWW_ROOT', __DIR__ . DS);
 }
 
 if (!defined('CAKE_CORE_INCLUDE_PATH')) {
@@ -95,7 +90,7 @@ if (!defined('CAKE_CORE_INCLUDE_PATH')) {
 	}
 }
 if (!empty($failed)) {
-	trigger_error("CakePHP core could not be found.  Check the value of CAKE_CORE_INCLUDE_PATH in APP/webroot/index.php.  It should point to the directory containing your " . DS . "cake core directory and your " . DS . "vendors root directory.", E_USER_ERROR);
+    trigger_error("CakePHP core could not be found. Check the value of CAKE_CORE_INCLUDE_PATH in APP/webroot/index.php. It should point to the directory containing your " . DS . "cake core directory and your " . DS . "vendors root directory.", E_USER_ERROR);
 }
 
 App::uses('Dispatcher', 'Routing');

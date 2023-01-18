@@ -16,17 +16,20 @@
                     'class' => 'input',
                     'options' => $distributionLevels,
                     'default' => isset($attribute['Attribute']['distribution']) ? $attribute['Attribute']['distribution'] : $initialDistribution,
-                    'stayInLine' => 1
+                    'stayInLine' => 1,
+                    'type' => 'dropdown'
                 ),
                 array(
                     'field' => 'sharing_group_id',
                     'class' => 'input',
                     'options' => $sharingGroups,
-                    'label' => __("Sharing Group")
+                    'label' => __("Sharing Group"),
+                    'type' => 'dropdown'
                 ),
                 array(
                     'field' => 'content',
-                    'class' => 'textarea input span6'
+                    'class' => 'span6',
+                    'type' => 'textarea'
                 ),
                 array(
                     'field' => 'event_id',
@@ -42,8 +45,8 @@
     ));
 ?>
 <?php
-    if (empty($ajax)) {
-        echo $this->element('/genericElements/SideMenu/side_menu', array('menuList' => 'eventReports', 'menuItem' => $this->request->params['action']));
+if (empty($ajax)) {
+    echo $this->element('/genericElements/SideMenu/side_menu', array('menuList' => 'eventReports', 'menuItem' => $this->request->params['action'], 'canEdit' => true));
 }
 ?>
 

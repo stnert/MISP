@@ -13,11 +13,11 @@ Make sure you are reading the parsed version of this Document. When in doubt [cl
 
     ```bash
     # Please check the installer options first to make the best choice for your install
-    wget -O /tmp/INSTALL.sh https://raw.githubusercontent.com/MISP/MISP/2.4/INSTALL/INSTALL.sh
+    wget --no-cache -O /tmp/INSTALL.sh https://raw.githubusercontent.com/MISP/MISP/2.4/INSTALL/INSTALL.sh
     bash /tmp/INSTALL.sh
 
     # This will install MISP Core
-    wget -O /tmp/INSTALL.sh https://raw.githubusercontent.com/MISP/MISP/2.4/INSTALL/INSTALL.sh
+    wget --no-cache -O /tmp/INSTALL.sh https://raw.githubusercontent.com/MISP/MISP/2.4/INSTALL/INSTALL.sh
     bash /tmp/INSTALL.sh -c
     ```
     **The above does NOT work yet**
@@ -200,8 +200,8 @@ cd ${PATH_TO_MISP}/app/files/scripts/mixbox
 $SUDO_WWW git config core.filemode false
 ${SUDO_WWW} ${PATH_TO_MISP}/venv/bin/pip install .
 
-# install STIX2.0 library to support STIX 2.0 export:
-cd ${PATH_TO_MISP}/cti-python-stix2
+# Install misp-stix
+cd ${PATH_TO_MISP}/app/files/scripts/misp-stix
 ${SUDO_WWW} ${PATH_TO_MISP}/venv/bin/pip install .
 
 # install PyMISP
@@ -251,7 +251,7 @@ cd ${PATH_TO_MISP}/app
 #${SUDO_WWW} $RUN_PHP -- php -r "if (hash_file('SHA384', 'composer-setup.php') === '$EXPECTED_SIGNATURE') { echo 'Installer verified'; } else { echo 'Installer corrupt'; unlink('composer-setup.php'); } echo PHP_EOL;"
 #${SUDO_WWW} $RUN_PHP "php composer-setup.php"
 #${SUDO_WWW} $RUN_PHP -- php -r "unlink('composer-setup.php');"
-${SUDO_WWW} $RUN_PHP "php composer.phar install"
+${SUDO_WWW} $RUN_PHP "php composer.phar install --no-dev"
 
 sudo yum install php-redis -y
 sudo systemctl restart rh-php72-php-fpm.service
@@ -268,6 +268,8 @@ for key in upload_max_filesize post_max_size max_execution_time max_input_time m
 do
     sudo sed -i "s/^\($key\).*/\1 = $(eval echo \${$key})/" $PHP_INI
 done
+sudo sed -i "s/^\(session.sid_length\).*/\1 = $(eval echo \${session0sid_length})/" $PHP_INI
+sudo sed -i "s/^\(session.use_strict_mode\).*/\1 = $(eval echo \${session0use_strict_mode})/" $PHP_INI
 sudo systemctl restart rh-php72-php-fpm.service
 
 # To use the scheduler worker for scheduled tasks, do the following:
@@ -595,7 +597,9 @@ ${SUDO_WWW} ${PATH_TO_MISP}/venv/bin/misp-modules -l 0.0.0.0 -s &
 sudo sed -i -e '$i \sudo -u apache ${PATH_TO_MISP}/venv/bin/misp-modules -l 127.0.0.1 -s &\n' /etc/rc.local
 ```
 
-{!generic/misp-dashboard-centos.md!}
+{!generic/misp-dashboard-rhel.md!}
+
+{!generic/misp-dashboard-cake.md!}
 
 {!generic/MISP_CAKE_init.md!}
 
